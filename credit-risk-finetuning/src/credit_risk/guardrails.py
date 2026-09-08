@@ -49,9 +49,25 @@ def validate_retrieval(evidence: list[Evidence], jurisdiction: Jurisdiction,
     return GuardrailResult(not failures, sorted(set(failures)), sorted(set(warnings)))
 
 
-def validate_output(response: CreditResponse, evidence: list[Evidence]) -> GuardrailResult:
+def validate_output(response: CreditResponse, evidence: list[Evidence],
+                    factsheet_case_id: str | None = None) -> GuardrailResult:
+    """Check every material fact against something a reviewer can open.
+
+    The factsheet is a citable source, not just context. Without it a fact drawn from
+    validated data had no way to be stated: citing the factsheet was an unknown_citation
+    and citing nothing was a material_fact_without_citation, so a correct answer about an
+    obligor's own position was unreleasable however well evidenced. The accepted handle is
+    exactly this case's id - not any string beginning with CASE - because the point of the
+    check is that a citation resolves to a specific artefact.
+
+    Nothing is weakened by allowing it: every number in the factsheet was computed in
+    Python from rows the data service validated, which is a stronger provenance than a
+    retrieved passage.
+    """
     failures: list[str] = []
     available_ids = {item.evidence_id for item in evidence}
+    if factsheet_case_id:
+        available_ids.add(factsheet_case_id)
     for claim in response.facts:
         if not claim.evidence_ids:
             failures.append("material_fact_without_citation")

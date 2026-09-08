@@ -37,7 +37,8 @@ retrieval_policy = RetrievalPolicy(settings.retrieval_policy)
 # was wired to and never opened.
 retriever = build_retriever(settings, retrieval_policy)
 # Replaced in tests and wherever a real index or a served adapter is available.
-model_client = OMLXClient(settings.omlx_base_url, settings.omlx_model)
+model_client = OMLXClient(settings.omlx_base_url, settings.omlx_model,
+                          api_key=settings.omlx_api_key)
 
 # SQL review defects are schema, query or calculation problems. Routing them to the
 # adapter would retrain the model for a bug in the query layer, which is exactly what the
@@ -372,7 +373,7 @@ def analyse(request: AnalysisRequest) -> dict:
     except ArchitecturePolicyError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
-    output_check = validate_output(response, evidence)
+    output_check = validate_output(response, evidence, factsheet_case_id=sheet.case_id)
     control = gate(response, request.query_plan.analysis_type)
     if not output_check.passed:
         # An unsupported or miscited claim is never released, whatever the tier.

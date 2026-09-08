@@ -95,6 +95,75 @@ class QdrantParityTests(unittest.TestCase):
 
 
 
+def portfolio_corpus() -> list[PolicyChunk]:
+    return [
+        # Most regulatory guidance names no portfolio: it applies to all of them.
+        chunk("p_all", Jurisdiction.SAMA, "Stage 2 on a significant increase in risk."),
+        chunk("p_corporate", Jurisdiction.SAMA, "Corporate obligor staging annex.",
+              portfolio=["corporate"]),
+        chunk("p_retail", Jurisdiction.SAMA, "Retail staging annex.",
+              portfolio=["retail"]),
+    ]
+
+
+@unittest.skipUnless(URL, "set CR_TEST_QDRANT_URL to run against a live Qdrant")
+class PortfolioScopedParityTests(unittest.TestCase):
+    """Parity under a portfolio-scoped predicate.
+
+    The other parity class queries with no portfolio, so the portfolio condition was never
+    exercised and the two backends diverged unnoticed: chunk_is_visible treats an empty
+    portfolio list as "applies to all", while the Qdrant filter's bare MatchAny excluded
+    it. Every unscoped circular - which is most of them - was invisible to every
+    portfolio-scoped query, and the API returned INSUFFICIENT_EVIDENCE against a full
+    index. Found by running the assembled stack, not by any component test.
+    """
+
+    COLLECTION = "test_portfolio_sama"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        from credit_risk.rag.index import QdrantPolicyIndex
+
+        cls.index = QdrantPolicyIndex(URL)
+        if cls.index.client.collection_exists(cls.COLLECTION):
+            cls.index.client.delete_collection(cls.COLLECTION)
+        cls.index.upsert(portfolio_corpus(), collection=cls.COLLECTION)
+        base = RetrievalPolicy(POLICY).build_predicate(AccessContext(
+            jurisdiction=Jurisdiction.SAMA, role="credit_analyst",
+            as_of_date=date(2026, 1, 15), portfolio="corporate"))
+        cls.predicate = type(base)(**{**base.__dict__, "collection": cls.COLLECTION})
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        if cls.index.client.collection_exists(cls.COLLECTION):
+            cls.index.client.delete_collection(cls.COLLECTION)
+
+    def _qdrant_ids(self) -> set[str]:
+        found = self.index.search_dense("staging", self.predicate, limit=10)
+        return {c.chunk_id for c, _ in found}
+
+    def test_guidance_with_no_portfolio_stays_visible(self) -> None:
+        self.assertIn("p_all", self._qdrant_ids())
+
+    def test_guidance_for_the_queried_portfolio_is_visible(self) -> None:
+        self.assertIn("p_corporate", self._qdrant_ids())
+
+    def test_guidance_for_another_portfolio_is_hidden(self) -> None:
+        self.assertNotIn("p_retail", self._qdrant_ids())
+
+    def test_the_server_agrees_with_the_reference(self) -> None:
+        expected = {c.chunk_id for c in portfolio_corpus()
+                    if chunk_is_visible(c, self.predicate)}
+        self.assertEqual(self._qdrant_ids(), expected)
+
+    def test_both_backends_return_the_same_set(self) -> None:
+        memory = InMemoryPolicyIndex()
+        memory.upsert(portfolio_corpus(), collection=self.COLLECTION)
+        in_memory = {c.chunk_id
+                     for c, _ in memory.search_dense("staging", self.predicate, limit=10)}
+        self.assertEqual(self._qdrant_ids(), in_memory)
+
+
 @unittest.skipUnless(URL, "set CR_TEST_QDRANT_URL to run against a live Qdrant")
 class EmbedderSignatureLiveTests(unittest.TestCase):
     """The signature has to survive a round trip through the server.

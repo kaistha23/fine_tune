@@ -152,9 +152,15 @@ def build_qdrant_filter(predicate: AccessPredicate) -> Any:
                               match=models.MatchAny(any=predicate.confidentiality_in)),
     ]
     if predicate.portfolio:
-        conditions.append(
+        # A chunk with no portfolio list applies to every portfolio - which is most
+        # regulatory guidance - so it must stay visible. chunk_is_visible encodes that as
+        # `predicate.portfolio and chunk.portfolio and ...`; a bare MatchAny here does not,
+        # and hid every unscoped circular from every portfolio-scoped query.
+        conditions.append(models.Filter(should=[
             models.FieldCondition(key="portfolio",
-                                  match=models.MatchAny(any=[predicate.portfolio])))
+                                  match=models.MatchAny(any=[predicate.portfolio])),
+            models.IsEmptyCondition(is_empty=models.PayloadField(key="portfolio")),
+        ]))
     return models.Filter(
         must=conditions,
         must_not=[
