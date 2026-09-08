@@ -6,7 +6,6 @@ from datetime import date
 
 from credit_risk.schemas import CreditResponse, Evidence, Jurisdiction, QueryPlan
 
-
 INJECTION_PATTERNS = [
     r"ignore (all|any|the) previous instructions",
     r"reveal (the )?(system|developer) prompt",

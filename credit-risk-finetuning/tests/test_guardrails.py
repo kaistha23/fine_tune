@@ -1,9 +1,15 @@
-from datetime import date
 import unittest
+from datetime import date
 
 from credit_risk.guardrails import validate_input, validate_output, validate_retrieval
 from credit_risk.schemas import (
-    AnswerStatus, CreditResponse, Evidence, Jurisdiction, Portfolio, QueryPlan, SupportedClaim
+    AnswerStatus,
+    CreditResponse,
+    Evidence,
+    Jurisdiction,
+    Portfolio,
+    QueryPlan,
+    SupportedClaim,
 )
 
 

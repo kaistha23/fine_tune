@@ -1,11 +1,10 @@
 """Training and fusing commands (findings H2, H9)."""
-from pathlib import Path
 import unittest
+from pathlib import Path
 
 import yaml
 
 from credit_risk.training import build_fuse_command, build_train_command
-
 
 CONFIG = Path(__file__).parents[1] / "configs" / "training.yaml"
 

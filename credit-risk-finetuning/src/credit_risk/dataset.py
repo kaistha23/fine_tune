@@ -16,7 +16,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-
 SYSTEM_PROMPT = (
     "You are a credit-risk advisory copilot. Separate facts, model outputs, inference and "
     "recommendations. Do not invent evidence, thresholds or customer facts. Identify missing "

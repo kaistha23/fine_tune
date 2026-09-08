@@ -1,10 +1,9 @@
+import unittest
 from datetime import date
 from pathlib import Path
-import unittest
 
 from credit_risk.query_guard import GuardedQueryCompiler, QueryGuardError, SchemaRegistry
 from credit_risk.schemas import Jurisdiction, Portfolio, QueryPlan
-
 
 REGISTRY = Path(__file__).parents[1] / "configs" / "schema_registry.yaml"
 

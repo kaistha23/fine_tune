@@ -4,15 +4,14 @@ These are the tests the handover repository did not have: nothing stopped a quer
 seeing data that did not exist at the analyst's as-of date, and a grain violation was
 reported as a missing-column error.
 """
+import unittest
 from datetime import date
 from pathlib import Path
-import unittest
 
 from pydantic import ValidationError
 
 from credit_risk.query_guard import GuardedQueryCompiler, QueryGuardError, SchemaRegistry
 from credit_risk.schemas import EntityLevel, Jurisdiction, Portfolio, QueryPlan
-
 
 REGISTRY = Path(__file__).parents[1] / "configs" / "schema_registry.yaml"
 
@@ -94,6 +93,22 @@ class GeneratedSqlTests(unittest.TestCase):
         # or this legitimate query would be rejected.
         compiled = compiler().compile(plan(metrics=["current_ratio"]))
         self.assertIn("current_assets", compiled.sql)
+
+    def test_undeclared_operator_is_refused(self) -> None:
+        registry = SchemaRegistry(REGISTRY)
+        # Drop BETWEEN from the allowlist; the date-range predicate must now be refused.
+        registry.data["query_controls"]["allowed_operators"] = ["=", "<=", "AND"]
+        with self.assertRaises(QueryGuardError) as ctx:
+            GuardedQueryCompiler(registry).compile(plan())
+        self.assertIn("undeclared operators", str(ctx.exception))
+        self.assertIn("BETWEEN", str(ctx.exception))
+
+    def test_operator_allowlist_is_actually_read(self) -> None:
+        controls = SchemaRegistry(REGISTRY).data["query_controls"]
+        self.assertIn("allowed_operators", controls)
+        # No allowed_joins: the compiler emits no joins, so declaring one would be a
+        # control nothing enforces.
+        self.assertNotIn("allowed_joins", controls)
 
     def test_table_must_be_allowlisted(self) -> None:
         registry = SchemaRegistry(REGISTRY)

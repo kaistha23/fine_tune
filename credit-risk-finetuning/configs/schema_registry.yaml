@@ -115,9 +115,9 @@ query_controls:
   statement_timeout_seconds: 15
   memory_limit: 512MB
   prohibited_sql_keywords: [insert, update, delete, drop, alter, create, attach, copy, export, import, pragma, merge, truncate, grant, revoke, call, install, load, set, reset]
-  allowed_operators: ["=", "<=", ">=", "BETWEEN", "AND"]
-  allowed_joins:
-    - left: obligor_monthly
-      right: facility_monthly
-      on: [obligor_id, observation_date]
-      cardinality: one_to_many
+  # Enforced against the SQL the compiler produces. Any operator outside this set is a
+  # bug in the compiler, not a caller-supplied value.
+  allowed_operators: ["=", "<=", "BETWEEN", "AND"]
+  # No allowed_joins block: the compiler emits single-table queries only. Declaring a join
+  # allowlist that nothing reads would be the same dead-config problem as before. Joins
+  # arrive with obligor/facility roll-up, and the allowlist arrives with them.

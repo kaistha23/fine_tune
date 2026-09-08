@@ -12,7 +12,10 @@ from datetime import date
 from typing import Any
 
 from credit_risk.calculations import (
-    CALCULATORS, calculate_metrics, percentage_point_change, relative_change_pct,
+    CALCULATORS,
+    calculate_metrics,
+    percentage_point_change,
+    relative_change_pct,
 )
 from credit_risk.schemas import CreditFactsheet, MetricValue, QueryPlan
 

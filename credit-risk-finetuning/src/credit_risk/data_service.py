@@ -9,10 +9,14 @@ import duckdb
 from fastapi import Depends, FastAPI, Header, HTTPException
 
 from credit_risk.architecture_policy import ArchitecturePolicy, ArchitecturePolicyError
-from credit_risk.query_guard import CompiledQuery, GuardedQueryCompiler, QueryGuardError, SchemaRegistry
+from credit_risk.query_guard import (
+    CompiledQuery,
+    GuardedQueryCompiler,
+    QueryGuardError,
+    SchemaRegistry,
+)
 from credit_risk.schemas import EntityLevel, QueryPlan
 from credit_risk.settings import settings
-
 
 app = FastAPI(title="Restricted Credit Data Service", version="0.1.0", docs_url=None)
 policy = ArchitecturePolicy(settings.architecture_policy, settings.architecture_policy_version)

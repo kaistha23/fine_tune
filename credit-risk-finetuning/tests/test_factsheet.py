@@ -1,16 +1,15 @@
 """Factsheet construction and the SFT dataset format (findings H7 and H1)."""
-from datetime import date
 import json
-from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import date
+from pathlib import Path
 
 from credit_risk.dataset import build_sft_record, stable_split, to_chat_line
 from credit_risk.factsheet import FactsheetError, build_factsheet
 from credit_risk.schemas import CreditFactsheet, Jurisdiction, Portfolio, QueryPlan
-
 
 ROOT = Path(__file__).parents[1]
 

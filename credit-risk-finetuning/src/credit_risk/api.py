@@ -10,10 +10,14 @@ from pydantic import BaseModel, Field, model_validator
 from credit_risk.architecture_policy import ArchitecturePolicy, ArchitecturePolicyError
 from credit_risk.feedback_store import FeedbackStore
 from credit_risk.guardrails import validate_input
-from credit_risk.query_guard import CompiledQuery, GuardedQueryCompiler, QueryGuardError, SchemaRegistry
+from credit_risk.query_guard import (
+    CompiledQuery,
+    GuardedQueryCompiler,
+    QueryGuardError,
+    SchemaRegistry,
+)
 from credit_risk.schemas import FeedbackRecord, QueryPlan
 from credit_risk.settings import settings
-
 
 app = FastAPI(title="Credit Risk Fine-Tuning Development API", version="0.1.0")
 policy = ArchitecturePolicy(settings.architecture_policy, settings.architecture_policy_version)
@@ -55,7 +59,7 @@ class SqlReviewRequest(BaseModel):
     task_type: str = "sql_review"
 
     @model_validator(mode="after")
-    def require_comment_on_rejection(self) -> "SqlReviewRequest":
+    def require_comment_on_rejection(self) -> SqlReviewRequest:
         if self.decision == "rejected" and not self.comment:
             raise ValueError("comment is required when a SQL review is rejected")
         return self
@@ -63,7 +67,7 @@ class SqlReviewRequest(BaseModel):
 
 def compute_query_hash(compiled: CompiledQuery) -> str:
     return hashlib.sha256(
-        f"{registry.version}:{compiled.sql}".encode("utf-8")
+        f"{registry.version}:{compiled.sql}".encode()
     ).hexdigest()
 
 

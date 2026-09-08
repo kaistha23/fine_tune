@@ -4,10 +4,10 @@ The handover repository produced a review packet and then had nowhere to send a 
 no endpoint, no persistence, no revalidation of corrections, and build_training_batch
 dropped every SQL-review record on the floor.
 """
-from datetime import date
-from pathlib import Path
 import tempfile
 import unittest
+from datetime import date
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 

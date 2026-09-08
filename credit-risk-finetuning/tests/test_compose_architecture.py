@@ -1,8 +1,7 @@
-from pathlib import Path
 import unittest
+from pathlib import Path
 
 import yaml
-
 
 COMPOSE = Path(__file__).parents[1] / "compose.yaml"
 

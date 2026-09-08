@@ -4,11 +4,11 @@ The handover repository executed the approved query and returned rows verbatim: 
 statement timeout, no memory bound, and no check that the rows matched the grain and
 filters the plan was approved under. There was also no test for this module at all.
 """
-from datetime import date
-from pathlib import Path
 import subprocess
 import sys
 import unittest
+from datetime import date
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -17,7 +17,6 @@ from credit_risk.data_service import ResultValidationError, app, validate_result
 from credit_risk.query_guard import GuardedQueryCompiler, SchemaRegistry
 from credit_risk.schemas import Jurisdiction, Portfolio, QueryPlan
 from credit_risk.settings import settings
-
 
 ROOT = Path(__file__).parents[1]
 FIXTURE = ROOT / "data" / "curated" / "credit_risk.duckdb"

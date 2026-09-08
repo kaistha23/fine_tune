@@ -14,6 +14,14 @@ class QueryGuardError(ValueError):
     pass
 
 
+_SYMBOL_OPERATORS = ("<=", ">=", "<>", "!=", "=", "<", ">")
+_WORD_OPERATORS = ("BETWEEN", "LIKE", "ILIKE", "IN", "OR", "AND", "NOT")
+_OPERATOR_PATTERN = re.compile("|".join(
+    list(_SYMBOL_OPERATORS)
+    + ["(?<![A-Z_])" + word + "(?![A-Z_])" for word in _WORD_OPERATORS]
+))
+
+
 @dataclass(frozen=True)
 class CompiledQuery:
     sql: str
@@ -74,6 +82,21 @@ class GuardedQueryCompiler:
         for keyword in prohibited:
             if re.search(r"\b" + re.escape(str(keyword).lower()) + r"\b", lowered):
                 raise QueryGuardError(f"Generated SQL contains a prohibited keyword: {keyword}")
+
+    def _assert_operators_allowlisted(self, sql: str) -> None:
+        """Every operator in the generated SQL must be declared in the registry.
+
+        Word operators use lookarounds so ORDER BY does not read as OR and
+        internal_rating does not read as IN.
+        """
+        allowed = {
+            str(op).upper()
+            for op in self.registry.data["query_controls"].get("allowed_operators", [])
+        }
+        found = set(_OPERATOR_PATTERN.findall(sql.upper()))
+        undeclared = sorted(found - allowed)
+        if undeclared:
+            raise QueryGuardError(f"Generated SQL uses undeclared operators: {undeclared}")
 
     def compile(self, plan: QueryPlan) -> CompiledQuery:
         controls = self.registry.data["query_controls"]
@@ -180,6 +203,7 @@ class GuardedQueryCompiler:
             + f' ORDER BY "observation_date" ASC LIMIT {maximum_rows}'
         )
         self._assert_no_prohibited_keywords(sql)
+        self._assert_operators_allowlisted(sql)
 
         return CompiledQuery(
             sql=sql,

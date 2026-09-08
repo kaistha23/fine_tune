@@ -21,7 +21,6 @@ from pathlib import Path
 
 import yaml
 
-
 DEFAULT_CONFIG = Path("configs/training.yaml")
 # oMLX's default model directory. The directory name becomes the served model id.
 DEFAULT_MODEL_DIR = Path.home() / ".omlx" / "models"

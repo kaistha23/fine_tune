@@ -1,8 +1,7 @@
-from pathlib import Path
 import unittest
+from pathlib import Path
 
 from credit_risk.architecture_policy import ArchitecturePolicy, ArchitecturePolicyError
-
 
 POLICY = Path(__file__).parents[1] / "configs" / "architecture_policy.yaml"
 

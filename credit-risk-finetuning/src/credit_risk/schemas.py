@@ -45,7 +45,7 @@ class QueryPlan(BaseModel):
     ] = "credit_deterioration"
 
     @model_validator(mode="after")
-    def validate_dates_and_grain(self) -> "QueryPlan":
+    def validate_dates_and_grain(self) -> QueryPlan:
         if self.date_from > self.date_to:
             raise ValueError("date_from must not be after date_to")
         # as_of_date is the point-in-time anchor: it is what the analyst is allowed to know.
@@ -147,7 +147,7 @@ class FeedbackRecord(BaseModel):
     feedback_batch: str | None = None
 
     @model_validator(mode="after")
-    def require_correction_for_training(self) -> "FeedbackRecord":
+    def require_correction_for_training(self) -> FeedbackRecord:
         if self.eligible_for_training and not self.corrected_output:
             raise ValueError("corrected_output is required when eligible_for_training is true")
         if self.sql_review_status == "rejected" and not self.sql_review_comment:

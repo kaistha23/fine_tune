@@ -9,7 +9,6 @@ from credit_risk.architecture_policy import ArchitecturePolicy
 from credit_risk.schemas import FeedbackRecord
 from credit_risk.settings import settings
 
-
 # Only genuine model-behaviour defects become training examples. Everything else is a bug
 # in a component that retraining would not fix, so it is routed, not trained on.
 TRAINING_ROOT_CAUSES = {"model_behaviour"}
