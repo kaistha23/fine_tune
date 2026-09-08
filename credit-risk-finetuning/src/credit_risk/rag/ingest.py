@@ -151,6 +151,7 @@ def chunk_document(text: str, meta: DocumentMeta) -> list[PolicyChunk]:
                 effective_to=meta.effective_to,
                 supersedes_document_id=meta.supersedes_document_id,
                 section_id=section.section_id,
+                chunk_index=index,
                 heading_path=section.heading_path,
                 confidentiality_level=meta.confidentiality_level,
                 allowed_roles=list(meta.allowed_roles),

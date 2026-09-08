@@ -9,15 +9,38 @@ one backend and quietly fail in the other.
 
 Qdrant is imported lazily. The test container runs on an internal network with no Qdrant
 and no qdrant-client installed, and the security properties must still be testable there.
+
+Both backends record the embedder signature that filled them and refuse a mismatch. Cosine
+similarity across two different embedding models is not a weak signal, it is a meaningless
+one, and it fails silently: the search still returns a confident top-k of wrong clauses.
 """
 from __future__ import annotations
 
+import hashlib
 from typing import Any, Protocol
 
 from credit_risk.rag.embedding import Embedder, HashingEmbedder, cosine
 from credit_risk.rag.filters import AccessPredicate, chunk_is_visible
 from credit_risk.rag.lexical import BM25
 from credit_risk.rag.schemas import PolicyChunk
+
+
+class EmbedderMismatch(RuntimeError):
+    """Raised when an index is used with a different embedder to the one that filled it.
+
+    Re-index rather than suppress this. Vectors from two models occupy unrelated spaces,
+    so the nearest neighbour of a query is arbitrary - and it is returned with a high
+    cosine score, so nothing downstream can tell the retrieval is broken.
+    """
+
+    def __init__(self, collection: str, stored: str, current: str):
+        super().__init__(
+            f"Collection {collection!r} was indexed with {stored!r} but is being queried "
+            f"with {current!r}. Re-index the collection with one embedder."
+        )
+        self.collection = collection
+        self.stored = stored
+        self.current = current
 
 
 class PolicyIndex(Protocol):
@@ -40,6 +63,17 @@ class InMemoryPolicyIndex:
         self.embedder = embedder or HashingEmbedder()
         self._collections: dict[str, list[PolicyChunk]] = {}
         self._vectors: dict[str, list[list[float]]] = {}
+        self._signatures: dict[str, str] = {}
+
+    def _check_signature(self, collection: str, *, writing: bool) -> None:
+        stored = self._signatures.get(collection)
+        current = self.embedder.signature
+        if stored is None:
+            if writing:
+                self._signatures[collection] = current
+            return
+        if stored != current:
+            raise EmbedderMismatch(collection, stored, current)
 
     def _collection_name(self, chunk: PolicyChunk, namespaces: dict[str, str]) -> str:
         return namespaces[chunk.jurisdiction.value]
@@ -53,6 +87,7 @@ class InMemoryPolicyIndex:
                     f"No collection for jurisdiction {chunk.jurisdiction.value}; "
                     "a chunk must never land in a shared namespace"
                 )
+            self._check_signature(name, writing=True)
             self._collections.setdefault(name, []).append(chunk)
             self._vectors.setdefault(name, []).append(self.embedder.embed(chunk.text))
 
@@ -62,11 +97,12 @@ class InMemoryPolicyIndex:
 
     def search_dense(self, query: str, predicate: AccessPredicate,
                      limit: int) -> list[tuple[PolicyChunk, float]]:
+        self._check_signature(predicate.collection, writing=False)
         visible = self._visible(predicate)
         if not visible:
             return []
         vectors = self._vectors[predicate.collection]
-        query_vector = self.embedder.embed(query)
+        query_vector = self.embedder.embed_query(query)
         scored = [(chunk, cosine(query_vector, vectors[i])) for i, chunk in visible]
         scored.sort(key=lambda pair: pair[1], reverse=True)
         return scored[:limit]
@@ -80,6 +116,22 @@ class InMemoryPolicyIndex:
         bm25 = BM25([tokenize(chunk.text) for _, chunk in visible])
         ranked = bm25.rank(query)
         return [(visible[i][1], score) for i, score in ranked[:limit]]
+
+
+# Key under which each collection records the embedder that filled it.
+_SIGNATURE_KEY = "embedder_signature"
+
+
+def stable_point_id(chunk_id: str) -> int:
+    """Derive a point id from the chunk id, deterministically across processes.
+
+    Python randomises str hashing per interpreter run, so an id built from hash() differs
+    every time the ingester is started. Re-ingesting a document then inserted a second
+    copy of every chunk instead of updating it, which duplicates evidence and inflates
+    coverage without any error being raised.
+    """
+    digest = hashlib.sha256(chunk_id.encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big") % (2**63)
 
 
 def build_qdrant_filter(predicate: AccessPredicate) -> Any:
@@ -152,15 +204,42 @@ class QdrantPolicyIndex:
         self.embedder = embedder or HashingEmbedder()
         self.client = QdrantClient(url=url, timeout=timeout)
 
+    def _stored_signature(self, collection: str) -> str | None:
+        """The embedder signature recorded on the collection, if the server keeps one."""
+        info = self.client.get_collection(collection)
+        metadata = getattr(info, "metadata", None) or {}
+        recorded = metadata.get(_SIGNATURE_KEY)
+        if recorded:
+            return str(recorded)
+        # Older servers have no collection metadata. Dimensionality is a weaker check -
+        # two models can share a width - but it still catches the common swap.
+        params = info.config.params.vectors
+        size = getattr(params, "size", None)
+        return f"?:{size}" if size else None
+
+    def _check_signature(self, collection: str) -> None:
+        stored = self._stored_signature(collection)
+        current = self.embedder.signature
+        if stored is None:
+            return
+        if stored.startswith("?:"):
+            if stored != f"?:{self.embedder.dimensions}":
+                raise EmbedderMismatch(collection, stored, current)
+            return
+        if stored != current:
+            raise EmbedderMismatch(collection, stored, current)
+
     def ensure_collection(self, collection: str) -> None:
         from qdrant_client import models
 
         if self.client.collection_exists(collection):
+            self._check_signature(collection)
             return
         self.client.create_collection(
             collection_name=collection,
             vectors_config=models.VectorParams(
                 size=self.embedder.dimensions, distance=models.Distance.COSINE),
+            metadata={_SIGNATURE_KEY: self.embedder.signature},
         )
         # Indexing the filtered fields is what keeps the pre-search filter cheap rather
         # than a full scan on every query.
@@ -192,7 +271,7 @@ class QdrantPolicyIndex:
                 collection_name=name,
                 points=[
                     models.PointStruct(
-                        id=abs(hash(chunk.chunk_id)) % (2**63),
+                        id=stable_point_id(chunk.chunk_id),
                         vector=self.embedder.embed(chunk.text),
                         payload=to_payload(chunk),
                     )
@@ -204,9 +283,10 @@ class QdrantPolicyIndex:
                      limit: int) -> list[tuple[PolicyChunk, float]]:
         if not self.client.collection_exists(predicate.collection):
             return []
+        self._check_signature(predicate.collection)
         found = self.client.query_points(
             collection_name=predicate.collection,
-            query=self.embedder.embed(query),
+            query=self.embedder.embed_query(query),
             query_filter=build_qdrant_filter(predicate),
             limit=limit,
             with_payload=True,

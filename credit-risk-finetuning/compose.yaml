@@ -72,7 +72,7 @@ services:
   # gets the rest of the hardening the other services have. No host port: it is reachable
   # only from the API over the internal network.
   qdrant:
-    image: qdrant/qdrant:v1.13.2
+    image: qdrant/qdrant:v1.19.1
     restart: unless-stopped
     init: true
     security_opt:

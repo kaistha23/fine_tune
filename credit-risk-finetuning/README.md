@@ -24,9 +24,10 @@ Run `uv run python -m unittest discover -s tests -v` - 113 tests - and `docker c
 | Guarded inference: factsheet + evidence to a checked, cited answer | Working |
 | Action control: risk tiers, prohibited autonomous decisions, abstention | Working |
 | Release gates and champion-challenger promotion, scored per portfolio and task | Working |
-| Embeddings | **Placeholder** - deterministic hashing, not semantic. Swap for Qwen3-Embedding and re-index |
-| Qdrant backend | Filter translation written and unit-tested; **never run against a live server** |
-| A real gold evaluation set | **Not built** - the harness is ready, the frozen cases are not |
+| Document ingestion: heading/clause chunking with full lineage | Working |
+| Embeddings | `MLXEmbedder` (Qwen3-Embedding) written; **retrieval quality still unmeasured**. `HashingEmbedder` remains the offline default and is not semantic |
+| Qdrant backend | Working; server-side filter validated against a live v1.19 server to match the in-memory reference exactly |
+| A real gold evaluation set | 8 synthetic seed cases, content-hashed. **Not a substitute for SME-written cases** |
 
 ## Endpoints
 
@@ -262,20 +263,23 @@ Raw, curated, training and model files are ignored by Git. Do not place confiden
 Every stage of the pipeline now exists and is tested. What remains is not missing code but
 missing real inputs and one unrun environment:
 
-1. **Nothing has executed on Apple Silicon.** MLX-LM and oMLX are Darwin/arm64-only and this
-   repository was built on Windows. The training and fusing commands construct correctly and
-   are unit-tested; they have never run. See the pre-flight check below.
-2. **The embedder is a placeholder.** `HashingEmbedder` is a deterministic hashed
-   bag-of-words, not a semantic model. It makes retrieval runnable and testable offline.
-   Retrieval *quality* is therefore unmeasured - swap in Qwen3-Embedding and re-index before
-   any accuracy claim, since vectors from different models are not comparable.
-3. **The Qdrant backend has never met a live server.** `build_qdrant_filter` is unit-tested
-   against the same predicate the in-memory reference uses, so the two cannot drift, but the
-   translation has not been exercised against Qdrant itself.
-4. **There is no gold set.** The scoring, gates and champion-challenger comparison are built
-   and tested; the frozen evaluation cases they consume have to be written by a credit SME.
-5. **No policy documents are ingested.** Chunking PDFs and Word files into `PolicyChunk`
-   records is not built - only the schema and the retrieval that consumes it.
+1. **No training run has completed on Apple Silicon.** The environment is confirmed - mlx
+   0.32.2, mlx-lm 0.31.3 with `qwen3_5` among its supported architectures, Metal available -
+   but the QLoRA run and `mlx_lm.fuse` have not been executed end to end. The commands
+   construct correctly and are unit-tested. See the pre-flight check below.
+2. **Retrieval quality is unmeasured.** `MLXEmbedder` runs Qwen3-Embedding through mlx-lm
+   and is exercised by `tests/test_embedding_live.py`, but the corpus has not been indexed
+   with it and no recall figure exists. `HashingEmbedder` is still the default: a hashed
+   bag-of-words that matches on shared surface tokens only, and no accuracy claim may rest
+   on it. Vectors from the two are not comparable, so switching requires a re-index - the
+   index records the embedder signature and refuses a mismatch rather than scoring it.
+3. **The gold set is synthetic.** Eight seed cases across both jurisdictions and all three
+   portfolios, content-hashed so a case cannot drift unnoticed. They exercise the harness;
+   they are not evidence of accuracy, and a credit SME still has to write the real ones.
+4. **Only text ingestion exists.** `rag/ingest.py` chunks by heading and clause with full
+   lineage, but PDF and Word extraction is not built - documents have to arrive as text.
+5. **Queries are obligor-scoped only.** The compiler always emits `obligor_id = ?` and no
+   joins, so portfolio-level cohort analysis is not reachable (finding M4).
 
 The institution-specific PIT PD/ECL engines remain integration points: their physical schemas
 and formulas must be supplied by the bank. The model never derives them - `model_outputs` in

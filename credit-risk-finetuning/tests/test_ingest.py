@@ -85,6 +85,24 @@ class ChunkLineageTests(unittest.TestCase):
         chunks = {c.section_id: c for c in chunk_document(CIRCULAR, meta())}
         self.assertEqual(chunks["7.2"].evidence_id, "SAMA-CIRC-4#7.2")
 
+    def test_a_split_clause_gets_distinguishable_citations(self) -> None:
+        # A clause long enough to split produced several chunks that all cited the same
+        # handle, so a reviewer following the citation could not tell which passage was
+        # used and the guardrail counted them as one piece of evidence.
+        long_clause = "5. Long clause\n\n" + "\n\n".join(
+            f"Paragraph {i} about provisioning and staging. " * 20 for i in range(8))
+        chunks = chunk_document(long_clause, meta())
+        self.assertGreater(len(chunks), 1, "fixture must actually split")
+        ids = [c.evidence_id for c in chunks]
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertEqual(ids[0], "SAMA-CIRC-4#5")
+        self.assertEqual(ids[1], "SAMA-CIRC-4#5/1")
+
+    def test_a_single_chunk_clause_keeps_the_plain_citation(self) -> None:
+        chunks = {c.section_id: c for c in chunk_document(CIRCULAR, meta())}
+        self.assertEqual(chunks["7.3"].evidence_id, "SAMA-CIRC-4#7.3")
+        self.assertEqual(chunks["7.3"].chunk_index, 0)
+
     def test_chunks_respect_the_size_ceiling(self) -> None:
         long_text = "5. Long clause\n\n" + ("A sentence about provisioning. " * 400)
         for chunk in chunk_document(long_text, meta()):

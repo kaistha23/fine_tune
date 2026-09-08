@@ -4,7 +4,7 @@ Skipped unless CR_TEST_QDRANT_URL is set, so the offline test container stays gr
 point is that a security control cannot hold in the in-memory reference and quietly fail
 in the backend that actually runs in production.
 
-    docker run --rm -d -p 6399:6333 qdrant/qdrant:v1.13.2
+    docker run --rm -d -p 6399:6333 qdrant/qdrant:v1.19.1
     CR_TEST_QDRANT_URL=http://127.0.0.1:6399 uv run python -m unittest tests.test_qdrant_live
 """
 import os

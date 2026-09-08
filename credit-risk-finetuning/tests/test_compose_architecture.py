@@ -1,9 +1,12 @@
+import re
+import tomllib
 import unittest
 from pathlib import Path
 
 import yaml
 
 COMPOSE = Path(__file__).parents[1] / "compose.yaml"
+PYPROJECT = Path(__file__).parents[1] / "pyproject.toml"
 
 
 class ComposeArchitectureTests(unittest.TestCase):
@@ -51,3 +54,35 @@ class ComposeArchitectureTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class QdrantVersionPinTests(unittest.TestCase):
+    """The client warns, and can misread new payload index types, when the server is on a
+    different major/minor line. The two pins are declared in different files, so nothing
+    stopped them drifting apart until this test."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.compose = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
+        cls.pyproject = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
+
+    def _image_line(self) -> tuple[int, int]:
+        image = self.compose["services"]["qdrant"]["image"]
+        match = re.search(r":v(\d+)\.(\d+)\.", image)
+        self.assertIsNotNone(match, f"qdrant image must pin an exact version, got {image}")
+        return int(match.group(1)), int(match.group(2))
+
+    def _client_specifiers(self) -> list[str]:
+        rag = self.pyproject["project"]["optional-dependencies"]["rag"]
+        return [d for d in rag if d.startswith("qdrant-client")]
+
+    def test_the_qdrant_image_is_pinned_to_an_exact_patch(self) -> None:
+        self._image_line()
+
+    def test_the_client_is_bounded_to_the_server_line(self) -> None:
+        specifiers = self._client_specifiers()
+        self.assertEqual(len(specifiers), 1)
+        spec = specifiers[0]
+        major, minor = self._image_line()
+        self.assertIn(f">={major}.{minor}", spec)
+        self.assertIn(f"<{major}.{minor + 1}", spec)
