@@ -1,0 +1,24 @@
+version: "1.0.0"
+default_deny: true
+
+# One physical collection per jurisdiction. Separation is structural, not a filter someone
+# can forget: a SAMA query never opens the CBUAE collection at all.
+namespaces:
+  SAMA: policy_sama
+  CBUAE: policy_cbuae
+
+retrieval:
+  candidate_k: 40      # per retrieval arm, before fusion
+  top_k: 8             # returned to the model
+  min_score: 0.72      # below this the answer is INSUFFICIENT_EVIDENCE
+  rrf_k: 60            # reciprocal rank fusion constant
+  max_context_chars: 12000
+
+# Default-deny on document lifecycle. A chunk is invisible unless it says it is approved.
+approval_status_allowed: [approved]
+
+# Roles that may see each confidentiality level. Absent role -> sees nothing.
+role_access:
+  credit_analyst: [public, internal]
+  senior_credit_officer: [public, internal, confidential]
+  regulator_liaison: [public, internal, confidential, restricted]
