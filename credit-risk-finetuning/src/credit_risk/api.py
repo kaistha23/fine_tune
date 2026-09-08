@@ -103,12 +103,19 @@ def build_sql_review_packet(compiled: CompiledQuery) -> dict:
         "filters": compiled.filters,
         "governed_calculations": compiled.governed_calculations,
         "point_in_time_columns": compiled.point_in_time_columns,
+        # Cohort queries: the reviewer has to see what was grouped, what was aggregated and
+        # what the suppression floor was, or "grain" alone tells them nothing about whether
+        # the aggregate is safe to release.
+        "group_by": compiled.group_by,
+        "aggregations": compiled.aggregations,
+        "minimum_cohort_size": compiled.minimum_cohort_size,
         "schema_registry_version": registry.version,
         "architecture_policy_version": policy.version,
         "editable": False,
         "execution_status": "NOT_EXECUTED",
         "review_instruction": (
-            "Verify grain, tables, columns, filters, joins and governed calculations. "
+            "Verify grain, tables, columns, filters, joins, governed calculations and, "
+            "for a cohort query, the group_by dimensions and cohort-size floor. "
             "Submit corrections as a structured query plan to /v1/query/review; edited SQL "
             "is never executed directly."
         ),

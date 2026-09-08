@@ -21,6 +21,8 @@ class Jurisdiction(StrEnum):
 class EntityLevel(StrEnum):
     OBLIGOR = "obligor"
     FACILITY = "facility"
+    # A cohort over a portfolio, never a named obligor. See QueryPlan.validate_dates_and_grain.
+    PORTFOLIO = "portfolio"
 
 
 class AnswerStatus(StrEnum):
@@ -34,8 +36,11 @@ class QueryPlan(BaseModel):
     portfolio: Portfolio
     jurisdiction: Jurisdiction
     entity_level: EntityLevel = EntityLevel.OBLIGOR
-    obligor_id: str = Field(min_length=1, max_length=128)
+    obligor_id: str | None = Field(default=None, max_length=128)
     facility_id: str | None = Field(default=None, max_length=128)
+    # Cohort dimensions, allowlisted in the registry. Empty for obligor and facility plans.
+    group_by: list[str] = Field(default_factory=list, max_length=4)
+    cohort_aggregation: Literal["count", "sum", "avg"] = "avg"
     date_from: date
     date_to: date
     as_of_date: date
@@ -54,6 +59,18 @@ class QueryPlan(BaseModel):
             raise ValueError("date_to must not be after as_of_date")
         if self.entity_level == EntityLevel.FACILITY and not self.facility_id:
             raise ValueError("facility_id is required for facility-level queries")
+
+        if self.entity_level == EntityLevel.PORTFOLIO:
+            # A cohort query that names an obligor is an individual extract with a GROUP BY
+            # bolted on. Refusing it here means the cohort-size floor cannot be sidestepped.
+            if self.obligor_id or self.facility_id:
+                raise ValueError(
+                    "portfolio-level queries must not name an obligor or facility")
+        else:
+            if not self.obligor_id:
+                raise ValueError("obligor_id is required for obligor and facility queries")
+            if self.group_by:
+                raise ValueError("group_by applies to portfolio-level queries only")
         return self
 
 

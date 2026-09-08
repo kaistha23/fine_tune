@@ -69,14 +69,18 @@ def validate_result(rows: list[dict[str, Any]], compiled: CompiledQuery,
     failures: list[str] = []
 
     maximum_rows = int(controls["maximum_result_rows"])
+    # The compiler asks for one row more than the limit, so an over-long result means the
+    # answer was truncated. A partial cohort table, or a time series missing its tail, is
+    # worse than no answer: it looks complete and is quietly wrong.
     if len(rows) > maximum_rows:
-        failures.append("row_limit_exceeded")
+        failures.append("result_truncated")
 
-    grain_keys = (
-        ["obligor_id", "observation_date"]
-        if plan.entity_level == EntityLevel.OBLIGOR
-        else ["obligor_id", "facility_id", "observation_date"]
-    )
+    if plan.entity_level == EntityLevel.PORTFOLIO:
+        grain_keys = list(compiled.group_by)
+    elif plan.entity_level == EntityLevel.OBLIGOR:
+        grain_keys = ["obligor_id", "observation_date"]
+    else:
+        grain_keys = ["obligor_id", "facility_id", "observation_date"]
     seen: set[tuple] = set()
     for row in rows:
         key = tuple(row.get(column) for column in grain_keys)
@@ -93,6 +97,18 @@ def validate_result(rows: list[dict[str, Any]], compiled: CompiledQuery,
         if row.get("jurisdiction") != plan.jurisdiction.value:
             failures.append("jurisdiction_mismatch")
             break
+
+    # Re-assert the cohort floor on the rows that came back, not just the HAVING clause
+    # that asked for it. A cohort below the floor is an individual disclosure, so this is
+    # the one check that must not depend on the SQL having been compiled correctly.
+    if compiled.minimum_cohort_size is not None:
+        for row in rows:
+            size = row.get("cohort_size")
+            if size is None or int(size) < compiled.minimum_cohort_size:
+                failures.append("cohort_below_minimum")
+                break
+        if any("obligor_id" in row or "facility_id" in row for row in rows):
+            failures.append("cohort_leaked_identifier")
 
     # Re-assert the point-in-time bound on the data that came back, not just the predicate
     # that asked for it.

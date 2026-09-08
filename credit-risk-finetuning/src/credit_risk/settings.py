@@ -6,7 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     database_path: Path = Path("data/curated/credit_risk.duckdb")
     schema_registry: Path = Path("configs/schema_registry.yaml")
-    schema_registry_version: str = "1.1.0"
+    schema_registry_version: str = "1.2.0"
     architecture_policy: Path = Path("configs/architecture_policy.yaml")
     architecture_policy_version: str = "1.1.0"
     retrieval_policy: Path = Path("configs/retrieval.yaml")
