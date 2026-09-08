@@ -1,0 +1,123 @@
+version: "1.1.0"
+default_deny: true
+
+# Columns that carry point-in-time semantics. Every compiled query is filtered on
+# data_cutoff_date, and additionally on model_run_date whenever a model-output column is
+# selected, so a query can only ever see what was knowable at the plan's as_of_date.
+point_in_time:
+  data_cutoff_column: data_cutoff_date
+  model_run_column: model_run_date
+
+tables:
+  obligor_monthly:
+    grain: obligor_month
+    portfolios: [retail, sme, corporate]
+    date_column: observation_date
+    entity_column: obligor_id
+    allowed_columns:
+      obligor_id: {type: string, sensitivity: restricted}
+      observation_date: {type: date, sensitivity: internal}
+      data_cutoff_date: {type: date, sensitivity: internal}
+      model_run_date: {type: date, sensitivity: internal}
+      portfolio: {type: string, sensitivity: internal}
+      jurisdiction: {type: string, sensitivity: internal}
+      revenue: {type: number, min: 0, sensitivity: confidential}
+      current_assets: {type: number, min: 0, sensitivity: confidential}
+      current_liabilities: {type: number, min: 0, sensitivity: confidential}
+      ebitda: {type: number, sensitivity: confidential}
+      total_debt: {type: number, min: 0, sensitivity: confidential}
+      cash: {type: number, min: 0, sensitivity: confidential}
+      debt_service: {type: number, min: 0, sensitivity: confidential}
+      operating_cash_flow: {type: number, sensitivity: confidential}
+      interest_expense: {type: number, min: 0, sensitivity: confidential}
+      facility_limit: {type: number, min: 0, sensitivity: confidential}
+      outstanding: {type: number, min: 0, sensitivity: confidential}
+      days_past_due: {type: integer, min: 0, sensitivity: confidential}
+      internal_rating: {type: string, sensitivity: confidential}
+      ttc_pd: {type: probability, min: 0, max: 1, model_output: true, sensitivity: confidential}
+      pit_pd: {type: probability, min: 0, max: 1, model_output: true, sensitivity: confidential}
+      lgd: {type: probability, min: 0, max: 1, model_output: true, sensitivity: confidential}
+      ead: {type: number, min: 0, model_output: true, sensitivity: confidential}
+      ecl: {type: number, min: 0, model_output: true, sensitivity: confidential}
+      stage: {type: integer, allowed: [1, 2, 3], sensitivity: confidential}
+      watchlist_flag: {type: boolean, sensitivity: confidential}
+      restructuring_flag: {type: boolean, sensitivity: confidential}
+  facility_monthly:
+    grain: facility_month
+    portfolios: [retail, sme, corporate]
+    date_column: observation_date
+    entity_column: obligor_id
+    allowed_columns:
+      obligor_id: {type: string, sensitivity: restricted}
+      facility_id: {type: string, sensitivity: restricted}
+      observation_date: {type: date, sensitivity: internal}
+      data_cutoff_date: {type: date, sensitivity: internal}
+      model_run_date: {type: date, sensitivity: internal}
+      portfolio: {type: string, sensitivity: internal}
+      jurisdiction: {type: string, sensitivity: internal}
+      facility_limit: {type: number, min: 0, sensitivity: confidential}
+      outstanding: {type: number, min: 0, sensitivity: confidential}
+      undrawn_amount: {type: number, min: 0, sensitivity: confidential}
+      days_past_due: {type: integer, min: 0, sensitivity: confidential}
+      collateral_value: {type: number, min: 0, sensitivity: confidential}
+      stage: {type: integer, allowed: [1, 2, 3], sensitivity: confidential}
+
+# entity_grain is default-deny: a metric may only be requested at a grain it declares.
+metrics:
+  current_ratio:
+    portfolios: [sme, corporate]
+    entity_grain: [obligor_month]
+    dependencies: [current_assets, current_liabilities]
+    formula_id: ratio.current_ratio.v1
+  net_debt_to_ebitda:
+    portfolios: [sme, corporate]
+    entity_grain: [obligor_month]
+    dependencies: [total_debt, cash, ebitda]
+    formula_id: ratio.net_debt_to_ebitda.v1
+  dscr:
+    portfolios: [sme, corporate]
+    entity_grain: [obligor_month]
+    dependencies: [operating_cash_flow, debt_service]
+    formula_id: ratio.dscr.v1
+  interest_coverage:
+    portfolios: [sme, corporate]
+    entity_grain: [obligor_month]
+    dependencies: [ebitda, interest_expense]
+    formula_id: ratio.interest_coverage.v1
+  utilisation_pct:
+    portfolios: [retail, sme, corporate]
+    entity_grain: [obligor_month, facility_month]
+    dependencies: [outstanding, facility_limit]
+    formula_id: ratio.utilisation.v1
+  pit_pd:
+    portfolios: [retail, sme, corporate]
+    entity_grain: [obligor_month]
+    source_column: pit_pd
+  internal_rating:
+    portfolios: [retail, sme, corporate]
+    entity_grain: [obligor_month]
+    source_column: internal_rating
+  stage:
+    portfolios: [retail, sme, corporate]
+    entity_grain: [obligor_month, facility_month]
+    source_column: stage
+  days_past_due:
+    portfolios: [retail, sme, corporate]
+    entity_grain: [obligor_month, facility_month]
+    source_column: days_past_due
+
+query_controls:
+  allowed_tables: [obligor_monthly, facility_monthly]
+  allowed_jurisdictions: [SAMA, CBUAE]
+  maximum_months: 60
+  maximum_metrics: 30
+  maximum_result_rows: 120
+  statement_timeout_seconds: 15
+  memory_limit: 512MB
+  prohibited_sql_keywords: [insert, update, delete, drop, alter, create, attach, copy, export, import, pragma, merge, truncate, grant, revoke, call, install, load, set, reset]
+  # Enforced against the SQL the compiler produces. Any operator outside this set is a
+  # bug in the compiler, not a caller-supplied value.
+  allowed_operators: ["=", "<=", "BETWEEN", "AND"]
+  # No allowed_joins block: the compiler emits single-table queries only. Declaring a join
+  # allowlist that nothing reads would be the same dead-config problem as before. Joins
+  # arrive with obligor/facility roll-up, and the allowlist arrives with them.
