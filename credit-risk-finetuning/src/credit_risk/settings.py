@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     schema_registry_version: str = "1.1.0"
     architecture_policy: Path = Path("configs/architecture_policy.yaml")
     architecture_policy_version: str = "1.1.0"
+    retrieval_policy: Path = Path("configs/retrieval.yaml")
     service_role: str = "api_gateway"
     service_token: str = "local-dev-only-change-me"
     data_service_url: str = "http://data-service:8081"

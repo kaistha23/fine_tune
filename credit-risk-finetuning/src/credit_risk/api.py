@@ -10,13 +10,18 @@ from pydantic import BaseModel, Field, model_validator
 from credit_risk.architecture_policy import ArchitecturePolicy, ArchitecturePolicyError
 from credit_risk.factsheet import FactsheetError, build_factsheet
 from credit_risk.feedback_store import FeedbackStore
-from credit_risk.guardrails import validate_input
+from credit_risk.guardrails import validate_input, validate_output
+from credit_risk.omlx_client import OMLXClient
 from credit_risk.query_guard import (
     CompiledQuery,
     GuardedQueryCompiler,
     QueryGuardError,
     SchemaRegistry,
 )
+from credit_risk.rag.filters import AccessPolicyError, RetrievalPolicy
+from credit_risk.rag.retriever import PolicyRetriever
+from credit_risk.rag.schemas import AccessContext
+from credit_risk.risk_tiers import gate
 from credit_risk.schemas import FeedbackRecord, QueryPlan
 from credit_risk.settings import settings
 
@@ -25,6 +30,10 @@ policy = ArchitecturePolicy(settings.architecture_policy, settings.architecture_
 registry = SchemaRegistry(settings.schema_registry, settings.schema_registry_version)
 compiler = GuardedQueryCompiler(registry)
 feedback_store = FeedbackStore(settings.feedback_path)
+retrieval_policy = RetrievalPolicy(settings.retrieval_policy)
+retriever = PolicyRetriever(retrieval_policy)
+# Replaced in tests and wherever a real index or a served adapter is available.
+model_client = OMLXClient(settings.omlx_base_url, settings.omlx_model)
 
 # SQL review defects are schema, query or calculation problems. Routing them to the
 # adapter would retrain the model for a bug in the query layer, which is exactly what the
@@ -35,6 +44,14 @@ SQL_REVIEW_ROOT_CAUSES = ("schema", "query", "calculation", "data")
 class QueryValidationRequest(BaseModel):
     user_text: str
     query_plan: QueryPlan
+
+
+class AnalysisRequest(BaseModel):
+    """A question about one obligor, answered from validated data and cited evidence."""
+
+    user_text: str
+    query_plan: QueryPlan
+    reviewer_role: str = "credit_analyst"
 
 
 class SqlReviewRequest(BaseModel):
@@ -263,3 +280,81 @@ def run() -> None:
     import uvicorn
 
     uvicorn.run("credit_risk.api:app", host="127.0.0.1", port=8080, reload=False)
+
+
+@app.post("/v1/analyse")
+def analyse(request: AnalysisRequest) -> dict:
+    """The full guarded path: rows -> factsheet -> evidence -> model -> gate.
+
+    Each stage can refuse. The model is only reached once the data is validated and the
+    evidence has passed its own filters, and its answer is checked against that evidence
+    before anyone sees it.
+    """
+    fetch_request = QueryValidationRequest(
+        user_text=request.user_text, query_plan=request.query_plan)
+    payload = _request_rows(fetch_request)
+
+    try:
+        sheet = build_factsheet(payload["rows"], request.query_plan)
+    except FactsheetError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    try:
+        context = AccessContext(
+            jurisdiction=request.query_plan.jurisdiction,
+            role=request.reviewer_role,
+            as_of_date=request.query_plan.as_of_date,
+            portfolio=request.query_plan.portfolio.value,
+        )
+        retrieval = retriever.retrieve(request.user_text, context)
+    except AccessPolicyError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    evidence = retrieval["evidence"]
+    if retrieval["answer_status"] == "INSUFFICIENT_EVIDENCE":
+        # Abstention is a correct outcome, not an error. The factsheet is still returned
+        # so the analyst can see what the numbers say without a cited narrative.
+        return {
+            "answer_status": "INSUFFICIENT_EVIDENCE",
+            "factsheet": sheet.model_dump(mode="json"),
+            "retrieval": {k: v for k, v in retrieval.items() if k != "evidence"},
+            "evidence": [item.model_dump(mode="json") for item in evidence],
+            "response": None,
+            "action_control": {"release": "blocked", "risk_tier": "medium",
+                               "human_approval_required": True, "released": False,
+                               "reasons": ["insufficient_evidence"]},
+        }
+
+    try:
+        policy.require(settings.service_role, "call_model")
+        response = model_client.generate_credit_response(
+            request.user_text, sheet.model_dump(mode="json"), evidence)
+    except ArchitecturePolicyError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except Exception as exc:
+        # Never surface the model host's address or its raw error.
+        raise HTTPException(status_code=502, detail="Model service unavailable") from exc
+
+    try:
+        policy.require(settings.service_role, "validate_model_output")
+    except ArchitecturePolicyError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    output_check = validate_output(response, evidence)
+    control = gate(response, request.query_plan.analysis_type)
+    if not output_check.passed:
+        # An unsupported or miscited claim is never released, whatever the tier.
+        control = {**control, "released": False, "release": "blocked",
+                   "human_approval_required": True,
+                   "reasons": sorted(set(control["reasons"] + output_check.failures))}
+
+    return {
+        "answer_status": response.answer_status.value,
+        "factsheet": sheet.model_dump(mode="json"),
+        "retrieval": {k: v for k, v in retrieval.items() if k != "evidence"},
+        "evidence": [item.model_dump(mode="json") for item in evidence],
+        "response": response.model_dump(mode="json"),
+        "output_guardrail": {"passed": output_check.passed,
+                             "failures": output_check.failures},
+        "action_control": control,
+    }
