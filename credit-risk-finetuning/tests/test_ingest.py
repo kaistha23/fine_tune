@@ -2,17 +2,20 @@
 
 The retrieval layer consumed PolicyChunk records but nothing produced them.
 """
-from datetime import date
 import unittest
+from datetime import date
+from pathlib import Path
 
 from credit_risk.rag.filters import RetrievalPolicy, chunk_is_visible
 from credit_risk.rag.ingest import (
-    DocumentMeta, MAX_CHARS, chunk_document, deduplicate, split_sections,
+    MAX_CHARS,
+    DocumentMeta,
+    chunk_document,
+    deduplicate,
+    split_sections,
 )
 from credit_risk.rag.schemas import AccessContext
 from credit_risk.schemas import Jurisdiction
-from pathlib import Path
-
 
 POLICY = Path(__file__).parents[1] / "configs" / "retrieval.yaml"
 

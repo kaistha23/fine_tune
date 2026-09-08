@@ -19,7 +19,6 @@ from datetime import date
 from credit_risk.rag.schemas import ApprovalStatus, ConfidentialityLevel, PolicyChunk
 from credit_risk.schemas import Jurisdiction
 
-
 # A heading is a numbered clause ("7.2 Staging"), or a markdown heading.
 _NUMBERED = re.compile(r"^\s{0,3}(?P<num>\d+(?:\.\d+){0,3})\.?\s+(?P<title>\S.*)$")
 _MARKDOWN = re.compile(r"^\s{0,3}(?P<hashes>#{1,6})\s+(?P<title>\S.*)$")

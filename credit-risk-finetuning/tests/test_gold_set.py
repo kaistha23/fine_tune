@@ -2,15 +2,14 @@
 
 Scoring, gates and champion-challenger were built with no cases to consume.
 """
-from pathlib import Path
 import shutil
 import tempfile
 import unittest
+from pathlib import Path
 
 from credit_risk.evaluation.gates import ReleaseGates, evaluate_gates
 from credit_risk.evaluation.gold import GoldSetError, content_hash, coverage, load_gold_set
 from credit_risk.evaluation.metrics import score_case, score_cases
-
 
 ROOT = Path(__file__).parents[1]
 GOLD = ROOT / "data" / "evaluation" / "gold_set.jsonl"
