@@ -140,7 +140,11 @@ class MLXEmbedder:
             # condition. Dropping it would embed the heading and discard the rule.
             ids = ids[-self.max_tokens:]
         hidden = self._model.model(mx.array([ids]))
-        pooled = hidden[0, -1, :]
+        # Normalise in float32. The model runs in bfloat16, where sum-of-squares over a
+        # thousand dimensions carries about three decimal digits, so normalising in the
+        # model dtype left vectors off unit length by ~2.5e-4. InMemoryPolicyIndex scores
+        # with a plain dot product on the assumption that they are unit vectors.
+        pooled = hidden[0, -1, :].astype(mx.float32)
         norm = mx.sqrt(mx.sum(pooled * pooled))
         if float(norm) > 0:
             pooled = pooled / norm

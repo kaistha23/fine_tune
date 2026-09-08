@@ -36,7 +36,7 @@ Run `uv run python -m unittest discover -s tests -v` - 113 tests - and `docker c
 | `GET /health` | Status plus both pinned policy versions |
 | `POST /v1/query/validate` | Validate a plan, return the SQL review packet. No database access |
 | `POST /v1/query/review` | Record approve/reject; revalidate a corrected plan; persist feedback |
-| `POST /v1/query/fetch` | Approved rows via the restricted data service |
+| `POST /v1/query/fetch` | Approved rows via the restricted data service (obligor, facility or suppressed portfolio cohort) |
 | `POST /v1/factsheet` | Approved rows reduced to the compact factsheet the model is shown |
 | `POST /v1/analyse` | The full guarded path: rows, factsheet, evidence, model, output check, action gate |
 
@@ -156,6 +156,22 @@ service re-asserts both bounds on the rows that come back.
 
 This is what stops future data leaking into a training example, where it would be invisible
 downstream.
+
+### Portfolio cohorts: aggregation without disclosure
+
+An obligor plan compiles to `obligor_id = ?`. A portfolio plan compiles to a `GROUP BY`
+over allowlisted dimensions - and may not name an obligor or facility at all, or a
+per-obligor extract would be reachable by bolting a `GROUP BY` onto it.
+
+Cohorts below 25 borrowers are suppressed in the `HAVING` clause and re-checked by the data
+service on the rows returned. The floor counts `DISTINCT obligor_id`, not rows: the table is
+obligor-month grain, so `COUNT(*)` over a year reaches 25 with three borrowers in it, which
+would look like k-anonymity while providing none.
+
+`MIN` and `MAX` are not available at any cohort size, because both return some individual's
+actual value. Governed ratios cannot be aggregated in SQL either - the average of a ratio is
+not the ratio of averages, and for DSCR the two differ by enough to change a decision, so
+the compiler refuses instead of returning a plausible number.
 
 ### Retrieval: separation before search, not after
 

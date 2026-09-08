@@ -32,6 +32,7 @@ IMPAIRED = ("An exposure that is more than 90 days past due is treated as credit
             "impaired and classified in stage 3.")
 COLLATERAL = ("Eligible financial collateral is revalued at least quarterly and the "
               "haircut applied follows the supervisory schedule.")
+PARAPHRASE = "At what point must a loan be downgraded for deteriorating creditworthiness?"
 
 
 def chunk(cid: str, section: str, text: str) -> PolicyChunk:
@@ -64,11 +65,12 @@ class MLXEmbedderLiveTests(unittest.TestCase):
         self.assertAlmostEqual(cosine(first, second), 1.0, places=4)
 
     def test_a_paraphrase_outranks_a_lexically_similar_distractor(self) -> None:
-        # The query shares more surface tokens with the collateral clause ("applied",
-        # "follows") than with the staging clause it actually asks about, so a
-        # bag-of-words projection gets this wrong. This is the placeholder's limit.
-        query = self.embedder.embed_query(
-            "When must a loan move out of stage 1 because its risk has worsened?")
+        # PARAPHRASE shares no content word with the SICR clause it asks about, and does
+        # share "applied"/"follows" surface shape with the collateral clause.
+        # HashingEmbedder ranks the distractor first here - asserted in
+        # tests/test_embedding.py - so this is the discrimination the placeholder cannot
+        # do, not merely one it does less well.
+        query = self.embedder.embed_query(PARAPHRASE)
         self.assertGreater(
             cosine(query, self.embedder.embed(SICR)),
             cosine(query, self.embedder.embed(COLLATERAL)))

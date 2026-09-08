@@ -17,7 +17,7 @@ from credit_risk.calculations import (
     percentage_point_change,
     relative_change_pct,
 )
-from credit_risk.schemas import CreditFactsheet, MetricValue, QueryPlan
+from credit_risk.schemas import CreditFactsheet, EntityLevel, MetricValue, QueryPlan
 
 # Columns reported as the obligor's position now, when present at the queried grain.
 POSITION_COLUMNS = (
@@ -108,6 +108,16 @@ def detect_data_quality(rows: list[dict[str, Any]], plan: QueryPlan) -> list[str
 def build_factsheet(rows: list[dict[str, Any]], plan: QueryPlan,
                     case_id: str | None = None) -> CreditFactsheet:
     """Build a factsheet from rows the data service has already validated."""
+    if plan.entity_level == EntityLevel.PORTFOLIO:
+        # The factsheet is an obligor-level artefact throughout - obligor_id, current
+        # position, trends, events - and every consumer of it, from the prompt to the
+        # action gate, reasons about one borrower. A cohort has no single obligor, so this
+        # refuses rather than assembling a sheet with an empty identity. Cohort rows are
+        # served by /v1/query/fetch.
+        raise FactsheetError(
+            "A factsheet is an obligor-level artefact and cannot be built from a "
+            "portfolio cohort; use /v1/query/fetch for cohort results"
+        )
     if not rows:
         raise FactsheetError("Cannot build a factsheet from an empty result set")
 

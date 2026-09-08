@@ -216,6 +216,29 @@ class CohortResultValidationTests(unittest.TestCase):
             validate_result(self._rows(jurisdiction="CBUAE"), compiled, plan, controls())
 
 
+class CohortFactsheetTests(unittest.TestCase):
+    def test_a_cohort_cannot_become_a_factsheet(self) -> None:
+        # The factsheet is obligor-level throughout, and every consumer of it reasons
+        # about one borrower. Without this guard a cohort plan reached CreditFactsheet
+        # with obligor_id=None and surfaced a raw pydantic error to the caller.
+        from credit_risk.factsheet import FactsheetError, build_factsheet
+        rows = [dict(portfolio="sme", jurisdiction="SAMA",
+                     observation_date="2025-06-30", cohort_size=30, pit_pd=0.04)]
+        with self.assertRaises(FactsheetError) as caught:
+            build_factsheet(rows, cohort_plan())
+        self.assertIn("/v1/query/fetch", str(caught.exception))
+
+    def test_an_obligor_factsheet_still_builds(self) -> None:
+        from credit_risk.factsheet import build_factsheet
+        plan = QueryPlan(
+            portfolio=Portfolio.SME, jurisdiction=Jurisdiction.SAMA,
+            obligor_id="OBL-0008", date_from=date(2025, 1, 31),
+            date_to=date(2025, 12, 31), as_of_date=date(2026, 1, 15), metrics=["pit_pd"])
+        rows = [dict(obligor_id="OBL-0008", portfolio="sme", jurisdiction="SAMA",
+                     observation_date="2025-06-30", pit_pd=0.04)]
+        self.assertEqual(build_factsheet(rows, plan).obligor_id, "OBL-0008")
+
+
 class TruncationTests(unittest.TestCase):
     """The row-limit check could never fire: SQL asked for exactly the limit."""
 

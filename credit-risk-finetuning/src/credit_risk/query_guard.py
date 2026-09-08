@@ -149,8 +149,13 @@ class GuardedQueryCompiler:
             source_columns.add("facility_id")
 
         cohort = controls.get("cohort") or {}
-        if is_cohort and not cohort:
-            raise QueryGuardError("Schema registry declares no cohort controls")
+        if is_cohort:
+            if not cohort:
+                raise QueryGuardError("Schema registry declares no cohort controls")
+            # The identifier is counted, never projected or filtered, but it still has to
+            # clear the column allowlist: without this the compiler would happily emit
+            # COUNT(DISTINCT ...) over a column the registry does not declare.
+            source_columns.add(table["entity_column"])
 
         group_by: list[str] = []
         if is_cohort:

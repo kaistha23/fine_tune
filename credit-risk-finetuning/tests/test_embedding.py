@@ -70,6 +70,21 @@ class EmbedderContractTests(unittest.TestCase):
         vector = HashingEmbedder().embed("expected credit loss staging")
         self.assertAlmostEqual(cosine(vector, vector), 1.0, places=6)
 
+    def test_the_placeholder_cannot_rank_a_paraphrase(self) -> None:
+        # Pins the limitation as an executable fact rather than a claim in a docstring.
+        # The query shares no content word with the clause that answers it, and shares
+        # surface shape with one that does not, so a hashed bag of words ranks the wrong
+        # clause first. tests/test_embedding_live.py asserts Qwen3-Embedding gets it right.
+        sicr = ("A significant increase in credit risk since initial recognition requires "
+                "the exposure to be reclassified from stage 1 to stage 2.")
+        collateral = ("Eligible financial collateral is revalued at least quarterly and "
+                      "the haircut applied follows the supervisory schedule.")
+        embedder = HashingEmbedder()
+        query = embedder.embed_query(
+            "At what point must a loan be downgraded for deteriorating creditworthiness?")
+        self.assertLess(cosine(query, embedder.embed(sicr)),
+                        cosine(query, embedder.embed(collateral)))
+
     def test_the_mlx_query_encoding_carries_the_instruction(self) -> None:
         embedder = MLXEmbedder()
         self.assertIn("Instruct:", f"Instruct: {embedder.query_instruction}")
