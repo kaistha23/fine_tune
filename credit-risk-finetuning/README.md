@@ -25,7 +25,7 @@ Run `uv run python -m unittest discover -s tests -v` - 113 tests - and `docker c
 | Action control: risk tiers, prohibited autonomous decisions, abstention | Working |
 | Release gates and champion-challenger promotion, scored per portfolio and task | Working |
 | Document ingestion: PDF/Word/text to clause-level chunks, with page numbers and headers stripped | Working |
-| Embeddings | `MLXEmbedder` validated against real Qwen3-Embedding weights. `OMLXEmbedder` (what the container uses) is **written but never called against a live oMLX server**. **Retrieval quality unmeasured** - no real corpus. `HashingEmbedder` is the fallback and is not semantic |
+| Embeddings | `OMLXEmbedder` (what the container uses) and `MLXEmbedder` both validated against real Qwen3-Embedding weights. **Retrieval quality unmeasured** - no real corpus. `HashingEmbedder` is the fallback and is not semantic |
 | Qdrant backend | Working; server-side filter validated against a live v1.19 server to match the in-memory reference exactly |
 | A real gold evaluation set | 8 synthetic seed cases, content-hashed. **Not a substitute for SME-written cases** |
 
@@ -173,6 +173,31 @@ actual value. Governed ratios cannot be aggregated in SQL either - the average o
 not the ratio of averages, and for DSCR the two differ by enough to change a decision, so
 the compiler refuses instead of returning a plausible number.
 
+### Running the live suites
+
+Most of the suite runs offline. The suites that need real services skip unless told where
+they are, because a security control that only holds in the in-memory reference is not a
+control.
+
+```bash
+docker run --rm -d -p 6399:6333 qdrant/qdrant:v1.19.1
+omlx serve --model-dir <dir containing an embedding model> --port 9906 --api-key <key>
+
+CR_TEST_QDRANT_URL=http://127.0.0.1:6399 \
+CR_TEST_OMLX_EMBEDDER=mlx-community--Qwen3-Embedding-0.6B-8bit \
+CR_TEST_OMLX_URL=http://127.0.0.1:9906/v1 \
+CR_OMLX_API_KEY=<key> \
+CR_TEST_EMBEDDER=mlx-community/Qwen3-Embedding-0.6B-8bit \
+  uv run pytest -q
+```
+
+| Suite | Covers |
+|---|---|
+| `test_qdrant_live.py` | Server-side filters match the in-memory reference; the embedder signature round-trips |
+| `test_embedding_live.py` | Qwen3-Embedding in-process through MLX |
+| `test_omlx_embedder_live.py` | The embedder the container actually uses, over HTTP |
+| `test_deployed_stack_live.py` | The assembled stack: settings to evidence |
+
 ### Retrieval: separation before search, not after
 
 Each jurisdiction is a separate Qdrant collection, chosen from the jurisdiction before a
@@ -282,13 +307,13 @@ missing real inputs and one unrun environment:
 1. **No training run has been done on real data.** The pipeline is verified end to end on
    Apple Silicon - load, 50-iter QLoRA, fuse, reload - but on synthetic examples, so
    nothing has been learned yet. Numbers in the table below.
-2. **Retrieval quality is unmeasured, and the deployed embedder is untested.**
-   `MLXEmbedder` runs Qwen3-Embedding through mlx-lm and is exercised against real weights
-   by `tests/test_embedding_live.py`. But the API container has no Metal, so what it
-   actually uses is `OMLXEmbedder`, which calls the native oMLX server's `/v1/embeddings` -
-   and that has never been called against a running server, because the local one requires
-   an API key. Set `CR_OMLX_API_KEY` and `CR_TEST_OMLX_EMBEDDER` to exercise it.
-   `HashingEmbedder` remains the fallback: a hashed bag-of-words matching on shared surface
+2. **Retrieval quality is unmeasured.** The stack is validated end to end - the deployed
+   configuration builds an `OMLXEmbedder` against a real oMLX server and a
+   `QdrantPolicyIndex` against a real Qdrant, ingests documents, ranks the answering clause
+   first and keeps the jurisdictions apart (`tests/test_deployed_stack_live.py`). What is
+   missing is a corpus: there is no recall or precision figure against real SAMA and CBUAE
+   circulars, because there are none to index. `HashingEmbedder` remains the fallback when
+   no embedding model is configured: a hashed bag-of-words matching on shared surface
    tokens only, with a test pinning a paraphrase it ranks wrong. Vectors from different
    models are not comparable, so switching requires a re-index - the index records the
    embedder signature and refuses a mismatch rather than scoring across two spaces.
