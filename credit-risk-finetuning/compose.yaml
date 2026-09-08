@@ -28,7 +28,7 @@ services:
       <<: *common-environment
       CR_SERVICE_ROLE: api_gateway
       CR_DATA_SERVICE_URL: http://data-service:8081
-      CR_OMLX_BASE_URL: http://host.docker.internal:8000/v1
+      CR_OMLX_BASE_URL: http://host.docker.internal:9905/v1
       CR_QDRANT_URL: http://qdrant:6333
     ports:
       - "127.0.0.1:8080:8080"
@@ -55,7 +55,6 @@ services:
       <<: *common-environment
       CR_SERVICE_ROLE: data_service
       CR_DATABASE_PATH: /data/credit_risk.duckdb
-      CR_MAX_RESULT_ROWS: "120"
       CR_QUERY_TIMEOUT_SECONDS: "15"
     expose:
       - "8081"
@@ -69,13 +68,19 @@ services:
       timeout: 3s
       retries: 5
 
+  # Qdrant needs a writable storage volume, so it cannot take read_only: true, but it
+  # gets the rest of the hardening the other services have. No host port: it is reachable
+  # only from the API over the internal network.
   qdrant:
     image: qdrant/qdrant:v1.13.2
     restart: unless-stopped
+    init: true
     security_opt:
       - no-new-privileges:true
-    ports:
-      - "127.0.0.1:6333:6333"
+    cap_drop:
+      - ALL
+    expose:
+      - "6333"
     volumes:
       - qdrant-data:/qdrant/storage
     networks:

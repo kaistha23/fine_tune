@@ -1,14 +1,47 @@
+# MLX-LM QLoRA config. Runs natively on macOS only - never inside Docker, which cannot
+# reach Apple Metal/ANE.
+#
+# The base model is a 4-bit quantised checkpoint, which is what makes this QLoRA rather
+# than plain LoRA; mlx-lm infers that from the weights, so fine_tune_type stays "lora".
+#
+# WARNING (finding C1): mlx-community/Qwen3.5-9B-4bit is a vision-language checkpoint
+# (Qwen3_5ForConditionalGeneration, model_type qwen3_5, with a vision tower). Confirm the
+# installed mlx-lm loads it text-only before trusting a run, and do not route training
+# through mlx-vlm - its Qwen3.5 LoRA path has an open p1 corruption bug. Fallback ladder:
+# mlx-community/Qwen3-14B-4bit, then mlx-community/Qwen2.5-7B-Instruct-8bit.
 model: mlx-community/Qwen3.5-9B-4bit
+train: true
 data: data/training/current
 adapter_path: adapters/credit-risk-advisory
-train: true
+
 fine_tune_type: lora
-iters: 1200
-batch_size: 1
-max_seq_length: 2048
-learning_rate: 0.00002
 num_layers: 16
+batch_size: 1
+iters: 1200
+learning_rate: 2.0e-5
+max_seq_length: 2048
+
+# Train the loss on the assistant turn only. On this prompt shape the input is roughly
+# 70% of the tokens, so without masking most of the gradient goes into reproducing the
+# factsheet rather than learning the analysis.
+mask_prompt: true
+
+# Trades compute for memory. Needed to keep a 9B 4-bit run inside the unified-memory
+# envelope alongside the OS and the application stack.
+grad_checkpoint: true
+
+lora_parameters:
+  # Both plans specify rank 16 / alpha 32. mlx-lm takes the multiplier directly as
+  # "scale", so scale = alpha / rank = 2.0.
+  rank: 16
+  scale: 2.0
+  dropout: 0.05
+
 steps_per_report: 10
 steps_per_eval: 100
 save_every: 100
 seed: 42
+
+# The plans also call for gradient accumulation of 8-16. The key name for this differs
+# across mlx-lm versions, so confirm it against the installed build during the C1 spike
+# before adding it here rather than shipping a config that may be silently ignored.

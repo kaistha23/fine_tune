@@ -12,12 +12,12 @@ class Settings(BaseSettings):
     service_role: str = "api_gateway"
     service_token: str = "local-dev-only-change-me"
     data_service_url: str = "http://data-service:8081"
-    omlx_base_url: str = "http://127.0.0.1:8000/v1"
-    omlx_model: str = "Qwen3.5-9B-4bit"
+    # oMLX on the target Mac is configured for 9905, not the upstream default 8000.
+    omlx_base_url: str = "http://127.0.0.1:9905/v1"
+    omlx_model: str = "credit-risk-qwen3.5-9b"
     feedback_path: Path = Path("data/feedback/feedback.jsonl")
     query_timeout_seconds: int = 15
-    max_result_rows: int = 120
-    max_context_tokens: int = 16_384
+    max_context_tokens: int = 16_384  # read by the inference layer (phase 3)
     min_evidence_score: float = 0.72
 
     model_config = SettingsConfigDict(env_prefix="CR_", env_file=".env", extra="ignore")

@@ -31,6 +31,24 @@ class ComposeArchitectureTests(unittest.TestCase):
         self.assertNotIn("omlx", services)
         self.assertNotIn("training", services)
 
+    def test_every_service_drops_all_capabilities(self) -> None:
+        # Qdrant was the one service without cap_drop or init (finding M6).
+        for name, service in self.compose["services"].items():
+            with self.subTest(service=name):
+                self.assertEqual(service.get("cap_drop"), ["ALL"])
+                self.assertIn("no-new-privileges:true", service.get("security_opt", []))
+
+    def test_only_the_api_is_published_to_the_host(self) -> None:
+        published = {
+            name for name, service in self.compose["services"].items()
+            if service.get("ports")
+        }
+        self.assertEqual(published, {"api"})
+
+    def test_data_service_is_only_on_the_internal_network(self) -> None:
+        self.assertEqual(self.compose["services"]["data-service"]["networks"],
+                         ["restricted-data"])
+
 
 if __name__ == "__main__":
     unittest.main()

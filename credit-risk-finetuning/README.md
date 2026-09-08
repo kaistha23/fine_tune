@@ -72,12 +72,25 @@ Run the feedback batch task after placing `feedback.jsonl` in `data/feedback/`:
 docker compose --profile batch run --rm feedback-worker
 ```
 
-Run QLoRA natively on macOS, outside Docker:
+Run QLoRA natively on macOS, outside Docker. Both commands print by default and only run
+with `--execute`, so the config is always read before it is trusted:
 
 ```bash
 uv sync --extra training
-uv run credit-risk-train --config configs/training.yaml --execute
+uv run credit-risk-train train --config configs/training.yaml --execute
+
+# Fusing is not optional. oMLX serves model directories and has no adapter flag, so an
+# unfused adapter cannot be served and therefore cannot be evaluated.
+uv run credit-risk-train fuse --config configs/training.yaml --execute
 ```
+
+`mlx_lm.server` can hot-load `--adapter-path` directly, which is faster while iterating; fuse
+once the adapter is worth serving.
+
+> **Before trusting a run:** `mlx-community/Qwen3.5-9B-4bit` is a vision-language checkpoint
+> (`Qwen3_5ForConditionalGeneration`, with a vision tower). Confirm the installed mlx-lm loads
+> it text-only, and do not route training through mlx-vlm - its Qwen3.5 LoRA path has an open
+> p1 corruption bug. Fallback ladder: `Qwen3-14B-4bit`, then `Qwen2.5-7B-Instruct-8bit`.
 
 ### Architecture-level schema enforcement
 
@@ -85,9 +98,32 @@ uv run credit-risk-train --config configs/training.yaml --execute
 2. `configs/schema_registry.yaml` allowlists tables, columns, metrics, portfolio applicability, grain, types and ranges.
 3. The API validates the typed `QueryPlan` but has no database mount.
 4. The restricted data service validates the same version-pinned schemas again.
-5. The data service generates parameterised SQL internally and opens DuckDB in read-only mode.
-6. Docker isolates the data service on an internal network and mounts curated data as read-only.
-7. A designated human reviewer can inspect the exact parameterised SQL template, approved tables/columns, schema version and query hash before relying on the result. Parameter values are masked by default; displayed SQL is read-only and cannot be edited and executed directly.
+5. The data service generates parameterised SQL internally, opens DuckDB read-only, and runs under a memory limit, a thread cap and a wall-clock bound.
+6. Returned rows are re-validated for grain uniqueness, row limit, portfolio/jurisdiction consistency and the point-in-time bound before anything is built on them.
+7. Docker isolates the data service on an internal network and mounts curated data as read-only. Only the API publishes a host port.
+8. A designated human reviewer inspects the exact parameterised SQL template, its hash, schema version, grain, tables, columns, joins, filters and governed calculation ids. Parameter values are masked; the displayed SQL is read-only.
+
+### Point-in-time correctness
+
+Every `QueryPlan` carries a required `as_of_date`, and the compiler emits a mandatory
+`data_cutoff_date <= as_of_date` predicate - plus `model_run_date <= as_of_date` whenever a
+model-output column is selected, because a row can sit inside the data cutoff while its
+PD/LGD/ECL came from a later model run. `date_to` may never exceed `as_of_date`. The data
+service re-asserts both bounds on the rows that come back.
+
+This is what stops future data leaking into a training example, where it would be invisible
+downstream.
+
+### Human SQL review
+
+`POST /v1/query/validate` returns the review packet. The reviewer approves or rejects through
+`POST /v1/query/review`, quoting the `query_hash` they were shown - a stale hash is refused.
+
+A correction is a **structured query plan**, never edited SQL. Corrections are recompiled
+through the identical default-deny cycle, and one that breaks the rules is refused rather than
+accepted. Every decision is persisted as a `FeedbackRecord` with `eligible_for_training=False`
+and routed to the schema and query backlog: a query-layer defect is fixed in the query layer,
+not by retraining the adapter.
 
 SQL review feedback must identify the incorrect table, column, join, grain, filter or governed calculation. Any corrected query plan is sent through the complete schema and architecture validation cycle before execution. Database credentials, internal paths and raw database errors are never returned.
 
@@ -105,6 +141,7 @@ curl -X POST http://127.0.0.1:8080/v1/query/validate \
       "obligor_id": "OBL-0008",
       "date_from": "2025-01-31",
       "date_to": "2025-12-31",
+      "as_of_date": "2026-01-15",
       "metrics": ["current_ratio", "dscr", "pit_pd", "stage"],
       "analysis_type": "credit_deterioration"
     }
