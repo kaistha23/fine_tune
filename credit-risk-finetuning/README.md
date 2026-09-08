@@ -18,14 +18,14 @@ Run `uv run python -m unittest discover -s tests -v` - 113 tests - and `docker c
 | Deterministic ratios and the compact credit factsheet | Working |
 | Feedback triage routing every root cause to an owner | Working |
 | SFT dataset builder in mlx-lm chat format with provenance | Working |
-| MLX-LM train and fuse commands | Command construction working; **unrun - needs the Mac** |
+| MLX-LM QLoRA train and fuse | Working; run end to end on Apple Silicon (load, 50-iter QLoRA, fuse, reload) on synthetic data |
 | RAG: per-jurisdiction collections, ACL and effective-date filters applied pre-search | Working |
 | Hybrid dense + BM25 retrieval with reciprocal rank fusion | Working |
 | Guarded inference: factsheet + evidence to a checked, cited answer | Working |
 | Action control: risk tiers, prohibited autonomous decisions, abstention | Working |
 | Release gates and champion-challenger promotion, scored per portfolio and task | Working |
 | Document ingestion: PDF/Word/text to clause-level chunks, with page numbers and headers stripped | Working |
-| Embeddings | `MLXEmbedder` (Qwen3-Embedding) written; **retrieval quality still unmeasured**. `HashingEmbedder` remains the offline default and is not semantic |
+| Embeddings | `MLXEmbedder` validated against real Qwen3-Embedding weights. `OMLXEmbedder` (what the container uses) is **written but never called against a live oMLX server**. **Retrieval quality unmeasured** - no real corpus. `HashingEmbedder` is the fallback and is not semantic |
 | Qdrant backend | Working; server-side filter validated against a live v1.19 server to match the in-memory reference exactly |
 | A real gold evaluation set | 8 synthetic seed cases, content-hashed. **Not a substitute for SME-written cases** |
 
@@ -279,16 +279,19 @@ Raw, curated, training and model files are ignored by Git. Do not place confiden
 Every stage of the pipeline now exists and is tested. What remains is not missing code but
 missing real inputs and one unrun environment:
 
-1. **No training run has completed on Apple Silicon.** The environment is confirmed - mlx
-   0.32.2, mlx-lm 0.31.3 with `qwen3_5` among its supported architectures, Metal available -
-   but the QLoRA run and `mlx_lm.fuse` have not been executed end to end. The commands
-   construct correctly and are unit-tested. See the pre-flight check below.
-2. **Retrieval quality is unmeasured.** `MLXEmbedder` runs Qwen3-Embedding through mlx-lm
-   and is exercised by `tests/test_embedding_live.py`, but the corpus has not been indexed
-   with it and no recall figure exists. `HashingEmbedder` is still the default: a hashed
-   bag-of-words that matches on shared surface tokens only, and no accuracy claim may rest
-   on it. Vectors from the two are not comparable, so switching requires a re-index - the
-   index records the embedder signature and refuses a mismatch rather than scoring it.
+1. **No training run has been done on real data.** The pipeline is verified end to end on
+   Apple Silicon - load, 50-iter QLoRA, fuse, reload - but on synthetic examples, so
+   nothing has been learned yet. Numbers in the table below.
+2. **Retrieval quality is unmeasured, and the deployed embedder is untested.**
+   `MLXEmbedder` runs Qwen3-Embedding through mlx-lm and is exercised against real weights
+   by `tests/test_embedding_live.py`. But the API container has no Metal, so what it
+   actually uses is `OMLXEmbedder`, which calls the native oMLX server's `/v1/embeddings` -
+   and that has never been called against a running server, because the local one requires
+   an API key. Set `CR_OMLX_API_KEY` and `CR_TEST_OMLX_EMBEDDER` to exercise it.
+   `HashingEmbedder` remains the fallback: a hashed bag-of-words matching on shared surface
+   tokens only, with a test pinning a paraphrase it ranks wrong. Vectors from different
+   models are not comparable, so switching requires a re-index - the index records the
+   embedder signature and refuses a mismatch rather than scoring across two spaces.
 3. **The gold set is synthetic.** Eight seed cases across both jurisdictions and all three
    portfolios, content-hashed so a case cannot drift unnoticed. They exercise the harness;
    they are not evidence of accuracy, and a credit SME still has to write the real ones.
@@ -303,17 +306,38 @@ The institution-specific PIT PD/ECL engines remain integration points: their phy
 and formulas must be supplied by the bank. The model never derives them - `model_outputs` in
 the factsheet are reported as given.
 
-### Verify before trusting a training run
+### What has been run on Apple Silicon
 
-Nothing in this repository has been executed on Apple Silicon. Before the first real run,
-confirm on the Mac:
+Measured on an M5 Pro, 64 GB, macOS 26.5.2, mlx 0.32.2 / mlx-lm 0.31.3, using synthetic
+training data. The open question was whether `mlx-community/Qwen3.5-9B-4bit` - which
+declares `Qwen3_5ForConditionalGeneration` and carries a vision tower - would train
+text-only through mlx-lm. It does.
+
+| Step | Result |
+|---|---|
+| Load + generate | `model_type qwen3_5`, peak 5.18 GB MLX / 5.70 GB RSS |
+| 50-iter QLoRA, rank 16, grad checkpointing, accumulation 8 | exit 0, peak 16.98 GB RSS, 20.6 min, 86.6 MB adapter |
+| `mlx_lm.fuse` | 5.0 GB model directory, quantization preserved |
+| Reload fused directory + generate | 1.1 s to load, peak 5.19 GB |
+
+Peak training memory leaves substantial headroom on 64 GB. `grad_accumulation_steps` is
+the correct key for this mlx-lm build - it is echoed into the adapter config the run
+writes, which is how a silently ignored key would show up.
+
+Reproduce with:
 
 ```bash
 uv venv --python 3.12          # the Mac default is 3.14, outside requires-python
 uv sync --extra training
-python -c "import mlx_lm; print(mlx_lm.__version__)"
-# then load mlx-community/Qwen3.5-9B-4bit text-only, run a 50-step spike, and fuse
+python -m mlx_lm.lora --config configs/training.yaml
+python -m mlx_lm.fuse --model mlx-community/Qwen3.5-9B-4bit \
+    --adapter-path adapters/credit-risk-advisory --save-path models/fused
 ```
 
-If the load raises `Model type qwen3_5 not supported`, take the fallback ladder in
-`configs/training.yaml` rather than building on an unproven base.
+oMLX serves the fused directory; it cannot load an adapter, which is why fusing is not
+optional. If a future load raises `Model type ... not supported`, take the fallback ladder
+in `configs/training.yaml` rather than building on an unproven base.
+
+What this does *not* establish: the adapter learned anything useful. The data was
+synthetic and the run was 50 iterations. It establishes that the pipeline executes and
+fits in memory.

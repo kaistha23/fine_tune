@@ -18,8 +18,9 @@ from credit_risk.query_guard import (
     QueryGuardError,
     SchemaRegistry,
 )
+from credit_risk.rag.factory import build_retriever
+from credit_risk.rag.factory import describe as describe_retrieval
 from credit_risk.rag.filters import AccessPolicyError, RetrievalPolicy
-from credit_risk.rag.retriever import PolicyRetriever
 from credit_risk.rag.schemas import AccessContext
 from credit_risk.risk_tiers import gate
 from credit_risk.schemas import EntityLevel, FeedbackRecord, QueryPlan
@@ -31,7 +32,10 @@ registry = SchemaRegistry(settings.schema_registry, settings.schema_registry_ver
 compiler = GuardedQueryCompiler(registry)
 feedback_store = FeedbackStore(settings.feedback_path)
 retrieval_policy = RetrievalPolicy(settings.retrieval_policy)
-retriever = PolicyRetriever(retrieval_policy)
+# Built from settings rather than defaulted: PolicyRetriever's default index is an empty
+# in-memory one, so the deployed API used to retrieve nothing from the Qdrant service it
+# was wired to and never opened.
+retriever = build_retriever(settings, retrieval_policy)
 # Replaced in tests and wherever a real index or a served adapter is available.
 model_client = OMLXClient(settings.omlx_base_url, settings.omlx_model)
 
@@ -136,6 +140,10 @@ def health() -> dict[str, str]:
         "role": settings.service_role,
         "schema_registry_version": registry.version,
         "architecture_policy_version": policy.version,
+        # An operator must be able to tell a real backend from the offline fallback
+        # without reading the container environment: the fallback answers every question
+        # with no evidence and is indistinguishable from a quiet corpus.
+        **{f"retrieval_{k}": v for k, v in describe_retrieval(settings).items()},
     }
 
 

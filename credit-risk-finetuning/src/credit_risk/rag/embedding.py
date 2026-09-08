@@ -6,7 +6,10 @@ HashingEmbedder is a hashed bag-of-words projection. It is NOT semantic - it mat
 on shared surface tokens - and exists so the pipeline is runnable and testable in the
 offline container. No retrieval accuracy claim may rest on it.
 
-MLXEmbedder runs Qwen3-Embedding locally through MLX. It is the one to measure against.
+MLXEmbedder runs Qwen3-Embedding locally through MLX, in-process on the Mac.
+
+OMLXEmbedder is what the deployed API uses: the API container has no Metal, so it asks
+the native oMLX server for embeddings over the same HTTP route it already uses for chat.
 
 Vectors from different models are not comparable, and cosine similarity between them is
 meaningless rather than merely poor - it produces confident, wrong neighbours. So every
@@ -155,6 +158,62 @@ class MLXEmbedder:
 
     def embed_query(self, text: str) -> list[float]:
         return self._encode(f"Instruct: {self.query_instruction}\nQuery: {text}")
+
+
+class OMLXEmbedder:
+    """Embeddings from the native oMLX server over HTTP.
+
+    This is the one the deployed API uses. The API runs in a Linux container with no
+    Metal, so it cannot run MLXEmbedder in-process - but oMLX is already running natively
+    on the Mac for chat completions and exposes /v1/embeddings, so embeddings take the
+    same route as inference rather than needing a second native service.
+
+    Dimensionality is discovered from the server on first use. Hard-coding it would let a
+    model change pass unnoticed until the vectors were already in the index.
+    """
+
+    def __init__(self, base_url: str, model: str, api_key: str = "",
+                 query_instruction: str = DEFAULT_QUERY_INSTRUCTION,
+                 timeout: float = 30.0):
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+        self.api_key = api_key
+        self.query_instruction = query_instruction
+        self.timeout = timeout
+        self._dimensions: int | None = None
+
+    @property
+    def dimensions(self) -> int:
+        if self._dimensions is None:
+            self._dimensions = len(self._request("dimension probe"))
+        return self._dimensions
+
+    @property
+    def signature(self) -> str:
+        return f"{self.model}:{self.dimensions}"
+
+    def _request(self, text: str) -> list[float]:
+        import httpx
+
+        headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+        with httpx.Client(timeout=self.timeout) as client:
+            response = client.post(
+                f"{self.base_url}/embeddings",
+                json={"model": self.model, "input": text},
+                headers=headers,
+            )
+            response.raise_for_status()
+        vector = response.json()["data"][0]["embedding"]
+        norm = math.sqrt(sum(value * value for value in vector))
+        # Servers differ on whether they normalise. InMemoryPolicyIndex scores with a
+        # plain dot product, so do it here rather than trusting the server.
+        return [value / norm for value in vector] if norm else vector
+
+    def embed(self, text: str) -> list[float]:
+        return self._request(text)
+
+    def embed_query(self, text: str) -> list[float]:
+        return self._request(f"Instruct: {self.query_instruction}\nQuery: {text}")
 
 
 def cosine(left: list[float], right: list[float]) -> float:

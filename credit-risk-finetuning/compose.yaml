@@ -13,7 +13,7 @@ x-service-hardening: &service-hardening
 
 x-common-environment: &common-environment
   CR_SCHEMA_REGISTRY: /app/configs/schema_registry.yaml
-  CR_SCHEMA_REGISTRY_VERSION: "1.1.0"
+  CR_SCHEMA_REGISTRY_VERSION: "1.2.0"
   CR_ARCHITECTURE_POLICY: /app/configs/architecture_policy.yaml
   CR_ARCHITECTURE_POLICY_VERSION: "1.1.0"
   CR_SERVICE_TOKEN: ${CR_SERVICE_TOKEN:-local-dev-only-change-me}
@@ -30,6 +30,12 @@ services:
       CR_DATA_SERVICE_URL: http://data-service:8081
       CR_OMLX_BASE_URL: http://host.docker.internal:9905/v1
       CR_QDRANT_URL: http://qdrant:6333
+      # Embeddings come from the native oMLX server, not from inside this container: the
+      # API image has no Metal. Unset falls back to the hashing placeholder, which is not
+      # semantic - /health reports which is in use.
+      CR_EMBEDDING_MODEL: ${CR_EMBEDDING_MODEL:-}
+      # Never a literal. Supplied from the host environment or a .env file kept out of git.
+      CR_OMLX_API_KEY: ${CR_OMLX_API_KEY:-}
     ports:
       - "127.0.0.1:8080:8080"
     networks:

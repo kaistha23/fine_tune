@@ -86,3 +86,56 @@ class QdrantVersionPinTests(unittest.TestCase):
         major, minor = self._image_line()
         self.assertIn(f">={major}.{minor}", spec)
         self.assertIn(f"<{major}.{minor + 1}", spec)
+
+
+class PinnedVersionTests(unittest.TestCase):
+    """compose.yaml and settings.py both pin the config versions, in different files.
+
+    Bumping the registry without bumping compose makes every container fail to start,
+    because SchemaRegistry refuses a version it was not pinned to. That is the control
+    working, but it should fail here rather than at deploy time.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.compose = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
+
+    def _environment(self) -> dict:
+        merged = {}
+        for service in self.compose["services"].values():
+            merged.update(service.get("environment") or {})
+        return merged
+
+    def test_the_compose_registry_pin_matches_the_registry_file(self) -> None:
+        registry = yaml.safe_load(
+            (Path(__file__).parents[1] / "configs" / "schema_registry.yaml")
+            .read_text(encoding="utf-8"))
+        self.assertEqual(
+            str(self._environment()["CR_SCHEMA_REGISTRY_VERSION"]),
+            str(registry["version"]))
+
+    def test_the_compose_policy_pin_matches_the_policy_file(self) -> None:
+        policy = yaml.safe_load(
+            (Path(__file__).parents[1] / "configs" / "architecture_policy.yaml")
+            .read_text(encoding="utf-8"))
+        self.assertEqual(
+            str(self._environment()["CR_ARCHITECTURE_POLICY_VERSION"]),
+            str(policy["version"]))
+
+    def test_settings_pin_the_same_versions_as_compose(self) -> None:
+        from credit_risk.settings import Settings
+        defaults = Settings()
+        environment = self._environment()
+        self.assertEqual(defaults.schema_registry_version,
+                         str(environment["CR_SCHEMA_REGISTRY_VERSION"]))
+        self.assertEqual(defaults.architecture_policy_version,
+                         str(environment["CR_ARCHITECTURE_POLICY_VERSION"]))
+
+    def test_no_credential_is_a_literal_in_compose(self) -> None:
+        # Tokens and keys must come from the host environment, never from the file.
+        for name in ("CR_SERVICE_TOKEN", "CR_OMLX_API_KEY"):
+            with self.subTest(variable=name):
+                value = str(self._environment().get(name, ""))
+                if value:
+                    self.assertTrue(value.startswith("${"), f"{name} is a literal")
+

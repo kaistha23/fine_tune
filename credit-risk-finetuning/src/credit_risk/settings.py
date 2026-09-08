@@ -17,6 +17,16 @@ class Settings(BaseSettings):
     # oMLX on the target Mac is configured for 9905, not the upstream default 8000.
     omlx_base_url: str = "http://127.0.0.1:9905/v1"
     omlx_model: str = "credit-risk-qwen3.5-9b"
+    # oMLX requires a key. Empty means unauthenticated, which only works on a server that
+    # has none configured; it is never logged or returned in an error.
+    omlx_api_key: str = ""
+    # Retrieval backend. compose.yaml has always set CR_QDRANT_URL, but Settings had no
+    # field for it and extra="ignore" dropped it silently, so the API ran against an empty
+    # in-memory index and every retrieval returned nothing. Empty means in-memory.
+    qdrant_url: str = ""
+    # Embeddings come from the native oMLX server: the API container has no Metal. Empty
+    # falls back to the hashing placeholder, which is not semantic.
+    embedding_model: str = ""
     feedback_path: Path = Path("data/feedback/feedback.jsonl")
     query_timeout_seconds: int = 15
     max_context_tokens: int = 16_384  # read by the inference layer (phase 3)

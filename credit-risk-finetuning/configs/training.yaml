@@ -4,15 +4,23 @@
 # The base model is a 4-bit quantised checkpoint, which is what makes this QLoRA rather
 # than plain LoRA; mlx-lm infers that from the weights, so fine_tune_type stays "lora".
 #
-# WARNING (finding C1): mlx-community/Qwen3.5-9B-4bit is a vision-language checkpoint
-# (Qwen3_5ForConditionalGeneration, model_type qwen3_5, with a vision tower). Confirm the
-# installed mlx-lm loads it text-only before trusting a run, and do not route training
-# through mlx-vlm - its Qwen3.5 LoRA path has an open p1 corruption bug.
+# Finding C1 - RESOLVED on this Mac (M5 Pro, 64 GB, macOS 26.5.2, mlx 0.32.2 / mlx-lm
+# 0.31.3). mlx-community/Qwen3.5-9B-4bit declares Qwen3_5ForConditionalGeneration and
+# carries a vision tower, which was the risk: mlx-lm loads it text-only and the full chain
+# was run end to end.
+#
+#   load + generate      peak 5.18 GB MLX,  5.70 GB RSS
+#   50-iter QLoRA        peak 16.98 GB RSS, 20.6 min, adapter 86.6 MB
+#   mlx_lm.fuse          5.0 GB directory, quantization preserved
+#   reload fused + gen   1.1 s to load, peak 5.19 GB
+#
+# Do not route training through mlx-vlm: its Qwen3.5 LoRA path has an open p1 corruption
+# bug, and there is no reason to, since mlx-lm handles this checkpoint.
 #
 # Fallback ladder, Qwen3 generation only:
-#   1. mlx-community/Qwen3.5-9B-4bit    primary QLoRA target
+#   1. mlx-community/Qwen3.5-9B-4bit    primary QLoRA target - verified above
 #   2. mlx-community/Qwen3.8-27B-4bit   64 GB challenger; QLoRA here is borderline and
-#                                       must pass the memory spike before it is trusted
+#                                       must pass its own memory spike before it is trusted
 #   3. mlx-community/Qwen3-14B-4bit     the plans' stable fallback
 model: mlx-community/Qwen3.5-9B-4bit
 train: true
@@ -47,6 +55,8 @@ steps_per_eval: 100
 save_every: 100
 seed: 42
 
-# The plans also call for gradient accumulation of 8-16. The key name for this differs
-# across mlx-lm versions, so confirm it against the installed build during the C1 spike
-# before adding it here rather than shipping a config that may be silently ignored.
+# The plans call for gradient accumulation of 8-16. Confirmed against mlx-lm 0.31.3 during
+# the C1 spike: the key is grad_accumulation_steps, and the value is echoed back into the
+# adapter_config.json the run writes, which is how an ignored key would have shown up.
+# Effective batch is batch_size x this = 8.
+grad_accumulation_steps: 8
