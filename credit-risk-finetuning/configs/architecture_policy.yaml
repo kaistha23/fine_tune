@@ -1,15 +1,22 @@
-version: "1.0.0"
+version: "1.1.0"
 default_deny: true
+
+# Capabilities describe what each service's code actually does, not an aspiration.
+# The API does build a parameterised SQL template in memory - that is how the reviewer is
+# shown it - but it can never execute one or reach the database file.
 roles:
   api_gateway:
     allowed:
       - validate_query_plan
+      - compile_parameterised_sql_for_review
       - view_parameterised_sql
       - request_data_service
+      - record_sql_review
       - call_model
       - validate_model_output
     denied:
       - execute_sql
+      - execute_read_only_sql
       - edit_and_execute_sql
       - access_database_file
       - mutate_schema
@@ -25,6 +32,7 @@ roles:
       - mutate_database
       - mutate_schema
       - access_feedback
+      - record_sql_review
   feedback_worker:
     allowed:
       - read_feedback
@@ -34,6 +42,7 @@ roles:
       - execute_sql
       - call_model
       - mutate_schema
+      - request_data_service
   training_host:
     allowed:
       - read_training_batch

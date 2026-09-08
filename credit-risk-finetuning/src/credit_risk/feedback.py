@@ -5,10 +5,24 @@ import json
 from collections import Counter
 from pathlib import Path
 
+from credit_risk.architecture_policy import ArchitecturePolicy
 from credit_risk.schemas import FeedbackRecord
+from credit_risk.settings import settings
 
 
+# Only genuine model-behaviour defects become training examples. Everything else is a bug
+# in a component that retraining would not fix, so it is routed, not trained on.
 TRAINING_ROOT_CAUSES = {"model_behaviour"}
+
+REMEDIATION_ROUTES = {
+    "data": "data_pipeline_backlog",
+    "schema": "schema_and_query_backlog",
+    "query": "schema_and_query_backlog",
+    "calculation": "calculation_code_backlog",
+    "retrieval": "rag_index_backlog",
+    "guardrail": "guardrail_rules_backlog",
+    "model_behaviour": "candidate_training_batch",
+}
 
 
 def load_feedback(path: Path) -> list[FeedbackRecord]:
@@ -24,7 +38,13 @@ def build_training_batch(records: list[FeedbackRecord]) -> tuple[list[dict], dic
     eligible: list[dict] = []
     root_causes = Counter(record.root_cause for record in records)
     error_labels = Counter(label for record in records for label in record.error_labels)
+    routed: Counter[str] = Counter()
+    sql_reviews: Counter[str] = Counter()
+
     for record in records:
+        routed[REMEDIATION_ROUTES.get(record.root_cause, "unrouted")] += 1
+        if record.sql_review_status != "not_reviewed":
+            sql_reviews[record.sql_review_status] += 1
         if (
             record.eligible_for_training
             and record.root_cause in TRAINING_ROOT_CAUSES
@@ -40,11 +60,19 @@ def build_training_batch(records: list[FeedbackRecord]) -> tuple[list[dict], dic
                 ],
                 "source": "validated_feedback",
             })
+
     report = {
         "input_records": len(records),
         "training_examples": len(eligible),
         "root_causes": dict(root_causes),
         "error_labels": dict(error_labels),
+        # Every non-training record still has an owner. Dropping them silently is what
+        # let SQL-review corrections disappear in the original implementation.
+        "remediation_routes": dict(routed),
+        "sql_reviews": dict(sql_reviews),
+        "corrections_awaiting_schema_fix": sum(
+            1 for r in records if r.corrected_query_plan is not None
+        ),
     }
     return eligible, report
 
@@ -54,6 +82,14 @@ def main() -> None:
     parser.add_argument("input", type=Path)
     parser.add_argument("output", type=Path)
     args = parser.parse_args()
+
+    # The worker's role is declared in the policy; enforce it here rather than trusting
+    # the deployment to have set it correctly.
+    policy = ArchitecturePolicy(settings.architecture_policy, settings.architecture_policy_version)
+    policy.require(settings.service_role, "read_feedback")
+    policy.require(settings.service_role, "classify_root_cause")
+    policy.require(settings.service_role, "write_training_batch")
+
     examples, report = build_training_batch(load_feedback(args.input))
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w", encoding="utf-8") as handle:
