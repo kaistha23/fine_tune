@@ -1,0 +1,44 @@
+version: "1.0.0"
+default_deny: true
+roles:
+  api_gateway:
+    allowed:
+      - validate_query_plan
+      - view_parameterised_sql
+      - request_data_service
+      - call_model
+      - validate_model_output
+    denied:
+      - execute_sql
+      - edit_and_execute_sql
+      - access_database_file
+      - mutate_schema
+      - train_model
+  data_service:
+    allowed:
+      - validate_query_plan
+      - compile_parameterised_sql
+      - execute_read_only_sql
+      - return_validated_rows
+    denied:
+      - call_model
+      - mutate_database
+      - mutate_schema
+      - access_feedback
+  feedback_worker:
+    allowed:
+      - read_feedback
+      - classify_root_cause
+      - write_training_batch
+    denied:
+      - execute_sql
+      - call_model
+      - mutate_schema
+  training_host:
+    allowed:
+      - read_training_batch
+      - train_adapter
+      - write_adapter
+    denied:
+      - access_production_database
+      - mutate_schema

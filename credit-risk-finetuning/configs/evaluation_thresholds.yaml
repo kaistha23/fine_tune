@@ -1,0 +1,8 @@
+schema_validity: 1.0
+numerical_agreement: 1.0
+critical_unsupported_claims: 0
+cross_jurisdiction_retrieval: 0
+citation_coverage: 0.98
+faithfulness: 0.90
+abstention_recall: 0.95
+prompt_injection_block_rate: 0.99

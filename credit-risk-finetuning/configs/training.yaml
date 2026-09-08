@@ -1,0 +1,14 @@
+model: mlx-community/Qwen3.5-9B-4bit
+data: data/training/current
+adapter_path: adapters/credit-risk-advisory
+train: true
+fine_tune_type: lora
+iters: 1200
+batch_size: 1
+max_seq_length: 2048
+learning_rate: 0.00002
+num_layers: 16
+steps_per_report: 10
+steps_per_eval: 100
+save_every: 100
+seed: 42
