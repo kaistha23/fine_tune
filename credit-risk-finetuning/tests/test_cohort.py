@@ -242,6 +242,7 @@ class CohortFactsheetTests(unittest.TestCase):
 class CohortEndpointTests(unittest.TestCase):
     def setUp(self) -> None:
         from fastapi.testclient import TestClient
+
         from credit_risk.api import app
         self.client = TestClient(app)
         self.body = {

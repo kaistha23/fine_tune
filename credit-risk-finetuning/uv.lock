@@ -269,6 +269,9 @@ documents = [
     { name = "pymupdf" },
     { name = "python-docx" },
 ]
+embedding = [
+    { name = "mlx-lm", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
+]
 evaluation = [
     { name = "deepeval" },
     { name = "ragas" },
@@ -287,6 +290,7 @@ requires-dist = [
     { name = "duckdb", specifier = ">=1.2" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.28" },
+    { name = "mlx-lm", marker = "platform_machine == 'arm64' and sys_platform == 'darwin' and extra == 'embedding'", specifier = ">=0.30" },
     { name = "mlx-lm", extras = ["train"], marker = "platform_machine == 'arm64' and sys_platform == 'darwin' and extra == 'training'", specifier = ">=0.30" },
     { name = "openpyxl", marker = "extra == 'data'", specifier = ">=3.1" },
     { name = "polars", marker = "extra == 'data'", specifier = ">=1.20" },
@@ -303,7 +307,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.9" },
     { name = "uvicorn", specifier = ">=0.34" },
 ]
-provides-extras = ["data", "documents", "rag", "training", "evaluation", "dev"]
+provides-extras = ["data", "documents", "rag", "training", "embedding", "evaluation", "dev"]
 
 [[package]]
 name = "datasets"

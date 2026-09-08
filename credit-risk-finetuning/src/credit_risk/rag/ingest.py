@@ -16,6 +16,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import date
 
+from credit_risk.rag.extract import Page
 from credit_risk.rag.schemas import ApprovalStatus, ConfidentialityLevel, PolicyChunk
 from credit_risk.schemas import Jurisdiction
 
@@ -180,3 +181,53 @@ def deduplicate(chunks: list[PolicyChunk]) -> list[PolicyChunk]:
         seen.add(key)
         unique.append(chunk)
     return unique
+
+
+def _page_starts(pages: list[Page]) -> tuple[str, list[tuple[int, int]]]:
+    """Join pages, recording the character offset at which each one starts."""
+    offsets: list[tuple[int, int]] = []
+    parts: list[str] = []
+    cursor = 0
+    for page in pages:
+        offsets.append((cursor, page.page_number))
+        parts.append(page.text)
+        cursor += len(page.text) + 2  # the "\n\n" join below
+    return "\n\n".join(parts), offsets
+
+
+def _page_for_offset(offset: int, offsets: list[tuple[int, int]]) -> int | None:
+    page = None
+    for start, number in offsets:
+        if start > offset:
+            break
+        page = number
+    return page
+
+
+def chunk_pages(pages: list[Page], meta: DocumentMeta) -> list[PolicyChunk]:
+    """Chunk extracted pages, attributing each chunk to the page it starts on.
+
+    Pages are joined before chunking rather than chunked individually, because a clause
+    that spans a page break is one rule and splitting it there would strip the condition
+    off it - the same failure fixed-length chunking causes.
+
+    The page recorded is where the chunk *starts*. A chunk crossing a boundary carries the
+    earlier page, which is where a reviewer should begin reading.
+    """
+    text, offsets = _page_starts(pages)
+    chunks = chunk_document(text, meta)
+
+    # Locate each chunk in the source by its opening line, moving a cursor forward so
+    # repeated wording maps to successive occurrences rather than all to the first.
+    cursor = 0
+    located: list[PolicyChunk] = []
+    for chunk in chunks:
+        probe = chunk.text[:60].strip()
+        found = text.find(probe, cursor) if probe else -1
+        if found == -1:
+            found = text.find(probe) if probe else -1
+        if found >= 0:
+            cursor = found + 1
+        page = _page_for_offset(found, offsets) if found >= 0 else None
+        located.append(chunk.model_copy(update={"page_number": page}))
+    return located

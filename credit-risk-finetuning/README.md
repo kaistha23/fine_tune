@@ -24,7 +24,7 @@ Run `uv run python -m unittest discover -s tests -v` - 113 tests - and `docker c
 | Guarded inference: factsheet + evidence to a checked, cited answer | Working |
 | Action control: risk tiers, prohibited autonomous decisions, abstention | Working |
 | Release gates and champion-challenger promotion, scored per portfolio and task | Working |
-| Document ingestion: heading/clause chunking with full lineage | Working |
+| Document ingestion: PDF/Word/text to clause-level chunks, with page numbers and headers stripped | Working |
 | Embeddings | `MLXEmbedder` (Qwen3-Embedding) written; **retrieval quality still unmeasured**. `HashingEmbedder` remains the offline default and is not semantic |
 | Qdrant backend | Working; server-side filter validated against a live v1.19 server to match the in-memory reference exactly |
 | A real gold evaluation set | 8 synthetic seed cases, content-hashed. **Not a substitute for SME-written cases** |
@@ -292,8 +292,10 @@ missing real inputs and one unrun environment:
 3. **The gold set is synthetic.** Eight seed cases across both jurisdictions and all three
    portfolios, content-hashed so a case cannot drift unnoticed. They exercise the harness;
    they are not evidence of accuracy, and a credit SME still has to write the real ones.
-4. **Only text ingestion exists.** `rag/ingest.py` chunks by heading and clause with full
-   lineage, but PDF and Word extraction is not built - documents have to arrive as text.
+4. **No real corpus is ingested.** PDF and Word extraction works - clause-level chunking,
+   page numbers on every citation, running headers stripped, tables kept row-wise - but it
+   has only been run against generated fixtures. Scanned PDFs are refused rather than
+   silently ingested empty; they need OCR first.
 5. **Queries are obligor-scoped only.** The compiler always emits `obligor_id = ?` and no
    joins, so portfolio-level cohort analysis is not reachable (finding M4).
 
