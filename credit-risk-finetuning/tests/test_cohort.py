@@ -239,6 +239,47 @@ class CohortFactsheetTests(unittest.TestCase):
         self.assertEqual(build_factsheet(rows, plan).obligor_id, "OBL-0008")
 
 
+class CohortEndpointTests(unittest.TestCase):
+    def setUp(self) -> None:
+        from fastapi.testclient import TestClient
+        from credit_risk.api import app
+        self.client = TestClient(app)
+        self.body = {
+            "user_text": "Average PD for the SME book through 2025",
+            "query_plan": {
+                "portfolio": "sme", "jurisdiction": "SAMA", "entity_level": "portfolio",
+                "group_by": ["observation_date"], "date_from": "2025-01-01",
+                "date_to": "2025-12-31", "as_of_date": "2026-01-15",
+                "metrics": ["pit_pd"],
+            },
+        }
+
+    def test_validate_accepts_a_cohort_plan(self) -> None:
+        response = self.client.post("/v1/query/validate", json=self.body)
+        self.assertEqual(response.status_code, 200)
+        review = response.json()["sql_review"]
+        self.assertEqual(review["group_by"],
+                         ["portfolio", "jurisdiction", "observation_date"])
+        self.assertEqual(review["minimum_cohort_size"], 25)
+        self.assertEqual(review["aggregations"], {"pit_pd": "avg(pit_pd)"})
+
+    def test_the_reviewer_sees_the_suppression_floor(self) -> None:
+        # "grain" alone tells a reviewer nothing about whether an aggregate is releasable.
+        review = self.client.post(
+            "/v1/query/validate", json=self.body).json()["sql_review"]
+        self.assertIn("cohort_size >= 25 (small cells suppressed)", review["filters"])
+
+    def test_factsheet_and_analyse_refuse_before_fetching_rows(self) -> None:
+        # Refusing after the fetch would pull obligor data across the service boundary for
+        # a request that cannot succeed. No data service is running in this test, so a 422
+        # rather than a 502 is what proves the check happens first.
+        for route in ("/v1/factsheet", "/v1/analyse"):
+            with self.subTest(route=route):
+                response = self.client.post(route, json=self.body)
+                self.assertEqual(response.status_code, 422)
+                self.assertIn("/v1/query/fetch", response.json()["detail"])
+
+
 class TruncationTests(unittest.TestCase):
     """The row-limit check could never fire: SQL asked for exactly the limit."""
 

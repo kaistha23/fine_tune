@@ -22,7 +22,7 @@ from credit_risk.rag.filters import AccessPolicyError, RetrievalPolicy
 from credit_risk.rag.retriever import PolicyRetriever
 from credit_risk.rag.schemas import AccessContext
 from credit_risk.risk_tiers import gate
-from credit_risk.schemas import FeedbackRecord, QueryPlan
+from credit_risk.schemas import EntityLevel, FeedbackRecord, QueryPlan
 from credit_risk.settings import settings
 
 app = FastAPI(title="Credit Risk Fine-Tuning Development API", version="0.1.0")
@@ -262,6 +262,21 @@ def fetch_data(request: QueryValidationRequest) -> dict:
     return _request_rows(request)
 
 
+def _reject_cohort_plan(plan: QueryPlan) -> None:
+    """Refuse a cohort plan before it reaches the data service.
+
+    build_factsheet refuses it too, but only after the rows have been fetched. Checking
+    here means a request that cannot succeed does not first pull obligor data across the
+    service boundary.
+    """
+    if plan.entity_level == EntityLevel.PORTFOLIO:
+        raise HTTPException(
+            status_code=422,
+            detail=("A factsheet is an obligor-level artefact and cannot be built from a "
+                    "portfolio cohort; use /v1/query/fetch for cohort results"),
+        )
+
+
 @app.post("/v1/factsheet")
 def factsheet(request: QueryValidationRequest) -> dict:
     """Approved rows in, compact factsheet out.
@@ -269,6 +284,7 @@ def factsheet(request: QueryValidationRequest) -> dict:
     This is the boundary the plans draw: deterministic Python owns every number, and the
     model is only ever shown this factsheet - never the raw monthly rows.
     """
+    _reject_cohort_plan(request.query_plan)
     payload = _request_rows(request)
     try:
         sheet = build_factsheet(payload["rows"], request.query_plan)
@@ -297,6 +313,7 @@ def analyse(request: AnalysisRequest) -> dict:
     evidence has passed its own filters, and its answer is checked against that evidence
     before anyone sees it.
     """
+    _reject_cohort_plan(request.query_plan)
     fetch_request = QueryValidationRequest(
         user_text=request.user_text, query_plan=request.query_plan)
     payload = _request_rows(fetch_request)
