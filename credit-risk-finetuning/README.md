@@ -2,7 +2,38 @@
 
 Runnable development scaffold for a local, English-language credit-risk advisory copilot covering Retail, SME and Corporate portfolios under separate SAMA and CBUAE knowledge domains.
 
-## Recommended architecture
+## What works today
+
+Run `uv run python -m unittest discover -s tests -v` - 68 tests - and `docker compose config -q`.
+
+| Capability | State |
+|---|---|
+| Default-deny schema registry: tables, columns, metrics, portfolios, grain, operators | Working |
+| Default-deny architecture policy per service role | Working |
+| Point-in-time query compilation, leakage prevented | Working |
+| Parameterised SQL, obligor values never interpolated | Working |
+| Restricted data service: read-only, memory/thread/time limits, result validation | Working |
+| API/data-service separation, API has no database mount | Working |
+| Human SQL review: packet, approve/reject, revalidated corrections, persisted feedback | Working |
+| Deterministic ratios and the compact credit factsheet | Working |
+| Feedback triage routing every root cause to an owner | Working |
+| SFT dataset builder in mlx-lm chat format with provenance | Working |
+| MLX-LM train and fuse commands | Command construction working; **unrun - needs the Mac** |
+| RAG over SAMA/CBUAE policy documents | **Not implemented** |
+| Model inference and the response contract end to end | **Not implemented** - `omlx_client.py` has no caller |
+| Evaluation harness and release gates | **Not implemented** - `configs/evaluation_thresholds.yaml` is read by no code |
+
+## Endpoints
+
+| Route | Purpose |
+|---|---|
+| `GET /health` | Status plus both pinned policy versions |
+| `POST /v1/query/validate` | Validate a plan, return the SQL review packet. No database access |
+| `POST /v1/query/review` | Record approve/reject; revalidate a corrected plan; persist feedback |
+| `POST /v1/query/fetch` | Approved rows via the restricted data service |
+| `POST /v1/factsheet` | Approved rows reduced to the compact factsheet the model is shown |
+
+## Target architecture
 
 - Qwen3.5-9B 4-bit common QLoRA adapter through MLX-LM.
 - Qwen3.8-27B 4-bit as an on-demand teacher/challenger.
@@ -20,10 +51,10 @@ The repository uses a hybrid architecture. This is intentional:
 |---|---|---|
 | API gateway and guardrails | Docker container | Has no database mount and cannot execute SQL |
 | Restricted data service | Docker container | Sole read-only database owner; compiles only allowlisted parameterised queries |
-| Qdrant | Docker container | Isolated vector store for SAMA/CBUAE namespaces |
+| Qdrant | Docker container | Vector store for SAMA/CBUAE namespaces. **Container only - no indexing or retrieval code yet** |
 | Feedback batch worker | On-demand Docker container | Reads feedback and writes curated candidate batches only |
 | Test runner | On-demand Docker container | Reproducible architecture and regression tests |
-| oMLX | Native macOS process | Uses Apple Metal/ANE optimisations unavailable through Docker Desktop |
+| oMLX | Native macOS process | Uses Apple Metal/ANE optimisations unavailable through Docker Desktop. **Client exists but is not yet wired to an endpoint** |
 | MLX-LM QLoRA training | Native macOS process | Requires direct Apple Silicon acceleration and unified memory |
 
 The API and data service are separated by an internal Docker network. Only the data service receives the read-only `data/curated` mount. The API receives validated rows, not SQL access. Both services load version-pinned, default-deny schema and architecture policies.
@@ -31,9 +62,13 @@ The API and data service are separated by an internal Docker network. Only the d
 ## Quick start
 
 ```bash
-uv venv --python 3.12
+uv venv --python 3.12          # required: the repo pins >=3.12,<3.14
 source .venv/bin/activate
 uv sync --extra dev
+
+# Synthetic, tokenised, deterministic. No real data anywhere in this repo.
+uv run python scripts/make_fixture.py
+
 uv run python -m unittest discover -s tests -v
 ```
 
@@ -148,7 +183,26 @@ curl -X POST http://127.0.0.1:8080/v1/query/validate \
   }'
 ```
 
-To retrieve approved rows through the isolated data service, change the endpoint to `/v1/query/fetch`. The request format is identical.
+The same request body works against `/v1/query/fetch` for approved rows, and against
+`/v1/factsheet` for the compact factsheet built from them.
+
+Record the reviewer's decision, quoting the `query_hash` the packet returned:
+
+```bash
+curl -X POST http://127.0.0.1:8080/v1/query/review   -H 'Content-Type: application/json'   -d '{
+    "interaction_id": "INT-0001",
+    "query_hash": "<query_hash from the review packet>",
+    "reviewed_query_plan": { "...": "the same query_plan as above" },
+    "decision": "rejected",
+    "comment": "dscr missing from the deterioration view",
+    "error_labels": ["wrong_column"],
+    "root_cause": "schema",
+    "corrected_query_plan": { "...": "a corrected plan, never edited SQL" }
+  }'
+```
+
+A stale `query_hash` is refused with 409, and a correction that breaks the rules is refused
+with 422 rather than accepted.
 
 ## Data safety
 
@@ -156,4 +210,34 @@ Raw, curated, training and model files are ignored by Git. Do not place confiden
 
 ## Current boundary
 
-This repository is a Phase 1 development scaffold. Document parsing, Qdrant indexing and the institution-specific PIT PD/ECL engines are integration points because their physical schemas and formulas must be supplied by the bank.
+Everything in the guarded-analytics path is built and tested. Three things are not, and each
+is a deliberate next phase rather than an oversight:
+
+1. **RAG.** Qdrant runs as a container but nothing indexes or queries it. SAMA/CBUAE
+   separation is currently only a post-hoc equality check in `guardrails.validate_retrieval`,
+   on evidence that nothing retrieves. Namespace isolation must be enforced at the index
+   filter, before search, not after.
+2. **Inference.** `omlx_client.py` is complete but has no caller, so `validate_output`, the
+   `CreditResponse` contract and the abstention logic are never exercised end to end.
+3. **Evaluation.** `configs/evaluation_thresholds.yaml` defines nine release gates and is read
+   by no code. There is no gold set and no champion-challenger comparison, so no adapter can
+   yet be promoted on evidence.
+
+The institution-specific PIT PD/ECL engines remain integration points: their physical schemas
+and formulas must be supplied by the bank. The model never derives them - `model_outputs` in
+the factsheet are reported as given.
+
+### Verify before trusting a training run
+
+Nothing in this repository has been executed on Apple Silicon. Before the first real run,
+confirm on the Mac:
+
+```bash
+uv venv --python 3.12          # the Mac default is 3.14, outside requires-python
+uv sync --extra training
+python -c "import mlx_lm; print(mlx_lm.__version__)"
+# then load mlx-community/Qwen3.5-9B-4bit text-only, run a 50-step spike, and fuse
+```
+
+If the load raises `Model type qwen3_5 not supported`, take the fallback ladder in
+`configs/training.yaml` rather than building on an unproven base.

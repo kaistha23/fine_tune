@@ -8,6 +8,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, model_validator
 
 from credit_risk.architecture_policy import ArchitecturePolicy, ArchitecturePolicyError
+from credit_risk.factsheet import FactsheetError, build_factsheet
 from credit_risk.feedback_store import FeedbackStore
 from credit_risk.guardrails import validate_input
 from credit_risk.query_guard import (
@@ -204,8 +205,12 @@ def review_query(request: SqlReviewRequest) -> dict:
     }
 
 
-@app.post("/v1/query/fetch")
-def fetch_data(request: QueryValidationRequest) -> dict:
+def _request_rows(request: QueryValidationRequest) -> dict:
+    """Validate the plan, then ask the restricted data service for approved rows.
+
+    The API never touches the database. It sends a validated plan and receives rows the
+    data service has already checked against the grain and filters it approved.
+    """
     input_result = validate_input(request.user_text, request.query_plan)
     if not input_result.passed:
         raise HTTPException(status_code=422, detail=input_result.failures)
@@ -226,6 +231,32 @@ def fetch_data(request: QueryValidationRequest) -> dict:
             return response.json()
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail="Restricted data service unavailable") from exc
+
+
+@app.post("/v1/query/fetch")
+def fetch_data(request: QueryValidationRequest) -> dict:
+    return _request_rows(request)
+
+
+@app.post("/v1/factsheet")
+def factsheet(request: QueryValidationRequest) -> dict:
+    """Approved rows in, compact factsheet out.
+
+    This is the boundary the plans draw: deterministic Python owns every number, and the
+    model is only ever shown this factsheet - never the raw monthly rows.
+    """
+    payload = _request_rows(request)
+    try:
+        sheet = build_factsheet(payload["rows"], request.query_plan)
+    except FactsheetError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {
+        "schema_registry_version": payload["schema_registry_version"],
+        "source_table": payload["source_table"],
+        "row_count": payload["row_count"],
+        "validation": payload["validation"],
+        "factsheet": sheet.model_dump(mode="json"),
+    }
 
 
 def run() -> None:
