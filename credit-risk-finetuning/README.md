@@ -21,7 +21,7 @@ Run `uv run python -m unittest discover -s tests -v` - 113 tests - and `docker c
 | MLX-LM QLoRA train and fuse | Working; run end to end on Apple Silicon (load, 50-iter QLoRA, fuse, reload) on synthetic data |
 | RAG: per-jurisdiction collections, ACL and effective-date filters applied pre-search | Working |
 | Hybrid dense + BM25 retrieval with reciprocal rank fusion | Working |
-| Guarded inference: factsheet + evidence to a checked, cited answer | Working |
+| Guarded inference: factsheet + evidence to a checked, cited answer | Working; run end to end against real DuckDB, Qdrant and oMLX services |
 | Action control: risk tiers, prohibited autonomous decisions, abstention | Working |
 | Release gates and champion-challenger promotion, scored per portfolio and task | Working |
 | Document ingestion: PDF/Word/text to clause-level chunks, with page numbers and headers stripped | Working |
@@ -193,10 +193,21 @@ CR_TEST_EMBEDDER=mlx-community/Qwen3-Embedding-0.6B-8bit \
 
 | Suite | Covers |
 |---|---|
-| `test_qdrant_live.py` | Server-side filters match the in-memory reference; the embedder signature round-trips |
+| `test_qdrant_live.py` | Server-side filters match the in-memory reference, portfolio scope included; the embedder signature round-trips |
 | `test_embedding_live.py` | Qwen3-Embedding in-process through MLX |
 | `test_omlx_embedder_live.py` | The embedder the container actually uses, over HTTP |
 | `test_deployed_stack_live.py` | The assembled stack: settings to evidence |
+
+With all of them up: 251 tests, nothing skipped.
+
+Standing the whole stack up is worth doing, not just the suites. Three defects survived
+every component test because each component was correct on its own: the two retrieval
+backends disagreed about chunks with no portfolio (so unscoped circulars, which is most
+of them, were invisible to every portfolio-scoped query), the chat client sent no
+`Authorization` header, and `validate_output` accepted citations only from retrieved
+evidence - so a fact about the obligor's own position could cite the factsheet, which was
+an unknown citation, or nothing, which was an uncited material fact. Both failed, making
+every answer containing a data fact unreleasable.
 
 ### Retrieval: separation before search, not after
 
