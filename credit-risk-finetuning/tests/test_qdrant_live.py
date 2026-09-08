@@ -94,5 +94,59 @@ class QdrantParityTests(unittest.TestCase):
         self.assertTrue(returned <= self.expected)
 
 
+
+@unittest.skipUnless(URL, "set CR_TEST_QDRANT_URL to run against a live Qdrant")
+class EmbedderSignatureLiveTests(unittest.TestCase):
+    """The signature has to survive a round trip through the server.
+
+    Qdrant returns collection metadata under `config`, not at the top level. Reading the
+    wrong attribute fell through to a dimension-only fallback that accepts a different
+    model of the same width - which is the swap the guard exists to stop, and it looked
+    like it was working.
+    """
+
+    COLLECTION = "test_signature"
+
+    def setUp(self) -> None:
+        from credit_risk.rag.embedding import HashingEmbedder
+        from credit_risk.rag.index import QdrantPolicyIndex
+        self.index = QdrantPolicyIndex(URL, HashingEmbedder(256))
+        if self.index.client.collection_exists(self.COLLECTION):
+            self.index.client.delete_collection(self.COLLECTION)
+        self.index.upsert([chunk("s1", Jurisdiction.SAMA, "Stage 2 on SICR.")],
+                          collection=self.COLLECTION)
+
+    def tearDown(self) -> None:
+        if self.index.client.collection_exists(self.COLLECTION):
+            self.index.client.delete_collection(self.COLLECTION)
+
+    def test_the_signature_round_trips_through_the_server(self) -> None:
+        self.assertEqual(
+            self.index._stored_signature(self.COLLECTION), "placeholder-hashing-v1:256")
+
+    def test_a_different_model_at_the_same_width_is_refused(self) -> None:
+        from credit_risk.rag.embedding import HashingEmbedder
+        from credit_risk.rag.index import EmbedderMismatch, QdrantPolicyIndex
+
+        class Wide(HashingEmbedder):
+            model_id = "placeholder-hashing-wide"
+
+        other = QdrantPolicyIndex(URL, Wide(256))
+        with self.assertRaises(EmbedderMismatch):
+            other.ensure_collection(self.COLLECTION)
+
+    def test_a_different_width_is_refused(self) -> None:
+        from credit_risk.rag.embedding import HashingEmbedder
+        from credit_risk.rag.index import EmbedderMismatch, QdrantPolicyIndex
+        other = QdrantPolicyIndex(URL, HashingEmbedder(512))
+        with self.assertRaises(EmbedderMismatch):
+            other.ensure_collection(self.COLLECTION)
+
+    def test_the_matching_embedder_is_accepted(self) -> None:
+        from credit_risk.rag.embedding import HashingEmbedder
+        from credit_risk.rag.index import QdrantPolicyIndex
+        QdrantPolicyIndex(URL, HashingEmbedder(256)).ensure_collection(self.COLLECTION)
+
+
 if __name__ == "__main__":
     unittest.main()

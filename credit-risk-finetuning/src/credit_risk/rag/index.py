@@ -207,7 +207,10 @@ class QdrantPolicyIndex:
     def _stored_signature(self, collection: str) -> str | None:
         """The embedder signature recorded on the collection, if the server keeps one."""
         info = self.client.get_collection(collection)
-        metadata = getattr(info, "metadata", None) or {}
+        # Qdrant returns collection metadata under config, not at the top level. Reading
+        # the wrong attribute silently fell through to the dimension-only fallback, which
+        # accepts a different model of the same width - the exact swap this guards.
+        metadata = getattr(info.config, "metadata", None) or {}
         recorded = metadata.get(_SIGNATURE_KEY)
         if recorded:
             return str(recorded)
