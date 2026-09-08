@@ -4,13 +4,16 @@ Runnable development scaffold for a local, English-language credit-risk advisory
 
 ## What works today
 
-Run `uv run python -m unittest discover -s tests -v` - 113 tests - and `docker compose config -q`.
+Run `uv run pytest -q` - **293 tests**, of which 260 pass offline and 33 skip because they
+need a live Qdrant, oMLX or Apple Silicon - and `docker compose config -q`. With every live
+service up, all 293 pass. See [Running the live suites](#running-the-live-suites).
 
 | Capability | State |
 |---|---|
 | Default-deny schema registry: tables, columns, metrics, portfolios, grain, operators | Working |
 | Default-deny architecture policy per service role | Working |
 | Point-in-time query compilation, leakage prevented | Working |
+| Portfolio cohorts: allowlisted dimensions, distinct-obligor suppression floor | Working |
 | Parameterised SQL, obligor values never interpolated | Working |
 | Restricted data service: read-only, memory/thread/time limits, result validation | Working |
 | API/data-service separation, API has no database mount | Working |
@@ -200,7 +203,7 @@ CR_TEST_EMBEDDER=mlx-community/Qwen3-Embedding-0.6B-8bit \
 | `test_omlx_embedder_live.py` | The embedder the container actually uses, over HTTP |
 | `test_deployed_stack_live.py` | The assembled stack: settings to evidence |
 
-With all of them up: 251 tests, nothing skipped.
+With all of them up: all 293 tests run, nothing skipped.
 
 Standing the whole stack up is worth doing, not just the suites. Three defects survived
 every component test because each component was correct on its own: the two retrieval
@@ -343,37 +346,76 @@ with 422 rather than accepted.
 
 Raw, curated, training and model files are ignored by Git. Do not place confidential data in source control. Use tokenised identifiers in training data. The query compiler returns parameterised SQL and never interpolates obligor values into query text.
 
-## Current boundary
+## What is left
 
-Every stage of the pipeline now exists and is tested. What remains is not missing code but
-missing real inputs and one unrun environment:
+Every stage exists, is tested, and has been run end to end against real services. What
+remains is not missing code. It is missing *inputs* - and they are yours to supply, because
+nobody else can write them.
 
-1. **No training run has been done on real data.** The pipeline is verified end to end on
-   Apple Silicon - load, 50-iter QLoRA, fuse, reload - but on synthetic examples, so
-   nothing has been learned yet. Numbers in the table below.
-2. **Retrieval quality is unmeasured.** The stack is validated end to end - the deployed
-   configuration builds an `OMLXEmbedder` against a real oMLX server and a
-   `QdrantPolicyIndex` against a real Qdrant, ingests documents, ranks the answering clause
-   first and keeps the jurisdictions apart (`tests/test_deployed_stack_live.py`). What is
-   missing is a corpus: there is no recall or precision figure against real SAMA and CBUAE
-   circulars, because there are none to index. `HashingEmbedder` remains the fallback when
-   no embedding model is configured: a hashed bag-of-words matching on shared surface
-   tokens only, with a test pinning a paraphrase it ranks wrong. Vectors from different
-   models are not comparable, so switching requires a re-index - the index records the
-   embedder signature and refuses a mismatch rather than scoring across two spaces.
-3. **The gold set is synthetic.** Eight seed cases across both jurisdictions and all three
-   portfolios, content-hashed so a case cannot drift unnoticed. They exercise the harness;
-   they are not evidence of accuracy, and a credit SME still has to write the real ones.
-4. **No real corpus is ingested.** PDF and Word extraction works - clause-level chunking,
-   page numbers on every citation, running headers stripped, tables kept row-wise - but it
-   has only been run against generated fixtures. Scanned PDFs are refused rather than
-   silently ingested empty; they need OCR first.
-5. **Queries are obligor-scoped only.** The compiler always emits `obligor_id = ?` and no
-   joins, so portfolio-level cohort analysis is not reachable (finding M4).
+### Blocking: you cannot train without these
 
-The institution-specific PIT PD/ECL engines remain integration points: their physical schemas
-and formulas must be supplied by the bank. The model never derives them - `model_outputs` in
-the factsheet are reported as given.
+**1. Seed training data.** There is none. `data/training/` does not exist.
+`credit_risk.dataset` takes a JSONL of `{case, target, task_type}`, where `case` is a
+factsheet and `target` is a `CreditResponse` JSON whose citations resolve. Nothing can
+generate these: a target is a credit analyst's judgement about a specific obligor, and a
+synthetic one teaches the model to imitate a machine.
+
+```bash
+uv run credit-risk-build-sft cases.jsonl data/training/current
+```
+
+Both producers - this and the feedback worker - write `train/valid/test.jsonl` plus
+provenance sidecars, split on the same obligor hash, so their outputs merge directly.
+
+**2. A policy corpus.** Retrieval is validated but empty. Put the real SAMA and CBUAE
+circulars through `rag/extract.py` and `rag/ingest.py`. This is not optional for training,
+not just for serving: a target that cites a clause absent from its own context teaches the
+model to cite from memory, which is the failure the citation guardrail exists to catch.
+Scanned PDFs are refused rather than ingested empty - they need OCR first.
+
+### Blocking a release, not a first run
+
+**3. A real gold set.** Eight synthetic seed cases, content-hashed so none can drift
+unnoticed. They exercise the harness; they are not evidence of anything. Gates apply per
+portfolio *and* per task slice, and at eight cases some slices hold one - a 0.98
+citation-coverage gate on a slice of one case is not a gate. `abstention_recall: 0.95`
+over four abstention cases fails on a single miss. A credit SME has to write these, and the
+number needed is set by the narrowest slice you intend to gate, not by a round total.
+
+**4. Retrieval quality is unmeasured.** The stack is validated - `OMLXEmbedder` against a
+real oMLX server, `QdrantPolicyIndex` against a real Qdrant, the answering clause ranked
+first, jurisdictions kept apart - but there is no recall or precision figure, because there
+is no corpus to measure against. It arrives with (2).
+
+### Configuration to set once you have data
+
+`iters: 1200` with `grad_accumulation_steps: 8` means **9,600 sequences seen**. At 500
+examples that is 19 epochs and heavy overfitting for LoRA. Size it to your dataset, roughly:
+
+```
+iters ~= examples * 3 / 8
+```
+
+`CR_ADAPTER_VERSION` and `CR_DATASET_VERSION` default to `base`/`none`. Set them when you
+serve a trained adapter, or every interaction records provenance that is not true.
+
+### Not gaps, but decisions someone must own
+
+The institution-specific PIT PD/ECL engines are integration points: their physical schemas
+and formulas come from the bank. The model never derives them - `model_outputs` in the
+factsheet are reported as given.
+
+`HashingEmbedder` is the fallback when `CR_EMBEDDING_MODEL` is unset. It is a hashed
+bag-of-words matching on shared surface tokens, with a test pinning a paraphrase it ranks
+wrong. No accuracy claim may rest on it, and `/health` reports which embedder is live so the
+fallback cannot be mistaken for a quiet corpus.
+
+Vectors from different embedders are not comparable, so changing the model requires a
+re-index. The index records the embedder signature and refuses a mismatch rather than
+scoring across two spaces.
+
+The interaction store holds factsheets, so it is obligor data at rest. It inherits the same
+retention and access rules as the feedback log; rotation is the operator's to schedule.
 
 ### What has been run on Apple Silicon
 
