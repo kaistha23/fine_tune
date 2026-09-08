@@ -1,0 +1,7 @@
+mlx>=0.32.0
+mlx-lm>=0.31.3
+numpy>=1.26
+# Only needed for the chat UI (app.py), which talks to mlx_lm.server over HTTP.
+# app.py uses the Gradio 6 API (theme passed to launch(), messages-format chat).
+gradio>=6.0
+openai>=1.40
