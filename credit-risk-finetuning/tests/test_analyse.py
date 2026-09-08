@@ -3,11 +3,11 @@
 omlx_client.py existed but had no caller, so validate_output, the CreditResponse contract
 and the abstention logic were never exercised end to end.
 """
-from datetime import date
-from pathlib import Path
 import subprocess
 import sys
 import unittest
+from datetime import date
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -18,10 +18,14 @@ from credit_risk.rag.retriever import PolicyRetriever
 from credit_risk.rag.schemas import PolicyChunk
 from credit_risk.risk_tiers import classify, gate
 from credit_risk.schemas import (
-    AnswerStatus, CreditResponse, InferenceClaim, Jurisdiction, Portfolio, QueryPlan,
+    AnswerStatus,
+    CreditResponse,
+    InferenceClaim,
+    Jurisdiction,
+    Portfolio,
+    QueryPlan,
     SupportedClaim,
 )
-
 
 ROOT = Path(__file__).parents[1]
 FIXTURE = ROOT / "data" / "curated" / "credit_risk.duckdb"

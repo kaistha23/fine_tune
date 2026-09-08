@@ -4,16 +4,15 @@ The handover repository ran Qdrant as a container with no retrieval code, so SAM
 separation was a post-hoc equality check on evidence nothing retrieved. These tests assert
 the separation happens *before* the search.
 """
+import unittest
 from datetime import date
 from pathlib import Path
-import unittest
 
 from credit_risk.rag.filters import AccessPolicyError, RetrievalPolicy, chunk_is_visible
 from credit_risk.rag.index import InMemoryPolicyIndex
 from credit_risk.rag.retriever import PolicyRetriever
 from credit_risk.rag.schemas import AccessContext, PolicyChunk
 from credit_risk.schemas import Jurisdiction
-
 
 POLICY = Path(__file__).parents[1] / "configs" / "retrieval.yaml"
 NAMESPACES = {"SAMA": "policy_sama", "CBUAE": "policy_cbuae"}

@@ -4,7 +4,7 @@ Runnable development scaffold for a local, English-language credit-risk advisory
 
 ## What works today
 
-Run `uv run python -m unittest discover -s tests -v` - 68 tests - and `docker compose config -q`.
+Run `uv run python -m unittest discover -s tests -v` - 113 tests - and `docker compose config -q`.
 
 | Capability | State |
 |---|---|
@@ -19,9 +19,14 @@ Run `uv run python -m unittest discover -s tests -v` - 68 tests - and `docker co
 | Feedback triage routing every root cause to an owner | Working |
 | SFT dataset builder in mlx-lm chat format with provenance | Working |
 | MLX-LM train and fuse commands | Command construction working; **unrun - needs the Mac** |
-| RAG over SAMA/CBUAE policy documents | **Not implemented** |
-| Model inference and the response contract end to end | **Not implemented** - `omlx_client.py` has no caller |
-| Evaluation harness and release gates | **Not implemented** - `configs/evaluation_thresholds.yaml` is read by no code |
+| RAG: per-jurisdiction collections, ACL and effective-date filters applied pre-search | Working |
+| Hybrid dense + BM25 retrieval with reciprocal rank fusion | Working |
+| Guarded inference: factsheet + evidence to a checked, cited answer | Working |
+| Action control: risk tiers, prohibited autonomous decisions, abstention | Working |
+| Release gates and champion-challenger promotion, scored per portfolio and task | Working |
+| Embeddings | **Placeholder** - deterministic hashing, not semantic. Swap for Qwen3-Embedding and re-index |
+| Qdrant backend | Filter translation written and unit-tested; **never run against a live server** |
+| A real gold evaluation set | **Not built** - the harness is ready, the frozen cases are not |
 
 ## Endpoints
 
@@ -32,6 +37,7 @@ Run `uv run python -m unittest discover -s tests -v` - 68 tests - and `docker co
 | `POST /v1/query/review` | Record approve/reject; revalidate a corrected plan; persist feedback |
 | `POST /v1/query/fetch` | Approved rows via the restricted data service |
 | `POST /v1/factsheet` | Approved rows reduced to the compact factsheet the model is shown |
+| `POST /v1/analyse` | The full guarded path: rows, factsheet, evidence, model, output check, action gate |
 
 ## Target architecture
 
@@ -149,6 +155,48 @@ service re-asserts both bounds on the rows that come back.
 This is what stops future data leaking into a training example, where it would be invisible
 downstream.
 
+### Retrieval: separation before search, not after
+
+Each jurisdiction is a separate Qdrant collection, chosen from the jurisdiction before a
+query is built - so a SAMA question never opens the CBUAE collection. Approval status,
+confidentiality against the caller's role, the effective-date window and portfolio are all
+**pre-search predicates** passed into the query, not filters applied to results.
+
+That ordering is the control. Filtering after retrieval is not equivalent: by then the
+document has already reached the process that builds the prompt. `validate_retrieval` still
+runs afterwards, but as defence in depth - a cross-jurisdiction hit at that point means the
+filter is broken, so it raises rather than quietly dropping the row.
+
+Configured in `configs/retrieval.yaml`. An unknown role sees nothing; an unknown
+jurisdiction has no collection.
+
+### Action control
+
+`POST /v1/analyse` gates every answer before release:
+
+| Tier | Example | Outcome |
+|---|---|---|
+| Low | Factsheet, extraction, no recommendation | Auto-release |
+| Medium | Deterioration commentary, any recommendation at all | Analyst review |
+| High | SICR, stage migration, rating or limit change, covenant breach | Senior credit approval |
+| Prohibited | "We hereby approve the facility", policy override | Blocked |
+
+An unsupported or miscited claim is blocked regardless of tier, so a fluent answer with a
+fabricated citation cannot be released. Abstention is a first-class outcome: with no
+admissible evidence the route returns `INSUFFICIENT_EVIDENCE` and the factsheet, without
+calling the model at all.
+
+### Release gates
+
+`configs/evaluation_thresholds.yaml` is read by `ReleaseGates` and applied to the overall
+scorecard **and to every portfolio and task slice**, because an aggregate that passes while
+one portfolio has collapsed is not a pass. Unsupported claims, cross-jurisdiction retrieval
+and numerical disagreement are zero-tolerance.
+
+A candidate adapter is promoted only if it clears every gate, improves something, and
+regresses no portfolio. The champion is never overwritten - `compare_adapters` returns a
+decision, it does not perform one.
+
 ### Human SQL review
 
 `POST /v1/query/validate` returns the review packet. The reviewer approves or rejects through
@@ -210,18 +258,23 @@ Raw, curated, training and model files are ignored by Git. Do not place confiden
 
 ## Current boundary
 
-Everything in the guarded-analytics path is built and tested. Three things are not, and each
-is a deliberate next phase rather than an oversight:
+Every stage of the pipeline now exists and is tested. What remains is not missing code but
+missing real inputs and one unrun environment:
 
-1. **RAG.** Qdrant runs as a container but nothing indexes or queries it. SAMA/CBUAE
-   separation is currently only a post-hoc equality check in `guardrails.validate_retrieval`,
-   on evidence that nothing retrieves. Namespace isolation must be enforced at the index
-   filter, before search, not after.
-2. **Inference.** `omlx_client.py` is complete but has no caller, so `validate_output`, the
-   `CreditResponse` contract and the abstention logic are never exercised end to end.
-3. **Evaluation.** `configs/evaluation_thresholds.yaml` defines nine release gates and is read
-   by no code. There is no gold set and no champion-challenger comparison, so no adapter can
-   yet be promoted on evidence.
+1. **Nothing has executed on Apple Silicon.** MLX-LM and oMLX are Darwin/arm64-only and this
+   repository was built on Windows. The training and fusing commands construct correctly and
+   are unit-tested; they have never run. See the pre-flight check below.
+2. **The embedder is a placeholder.** `HashingEmbedder` is a deterministic hashed
+   bag-of-words, not a semantic model. It makes retrieval runnable and testable offline.
+   Retrieval *quality* is therefore unmeasured - swap in Qwen3-Embedding and re-index before
+   any accuracy claim, since vectors from different models are not comparable.
+3. **The Qdrant backend has never met a live server.** `build_qdrant_filter` is unit-tested
+   against the same predicate the in-memory reference uses, so the two cannot drift, but the
+   translation has not been exercised against Qdrant itself.
+4. **There is no gold set.** The scoring, gates and champion-challenger comparison are built
+   and tested; the frozen evaluation cases they consume have to be written by a credit SME.
+5. **No policy documents are ingested.** Chunking PDFs and Word files into `PolicyChunk`
+   records is not built - only the schema and the retrieval that consumes it.
 
 The institution-specific PIT PD/ECL engines remain integration points: their physical schemas
 and formulas must be supplied by the bank. The model never derives them - `model_outputs` in
