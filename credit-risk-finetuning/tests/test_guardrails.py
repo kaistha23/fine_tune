@@ -14,6 +14,7 @@ def sample_plan() -> QueryPlan:
         obligor_id="OBL-1",
         date_from=date(2025, 1, 1),
         date_to=date(2025, 12, 31),
+        as_of_date=date(2025, 12, 31),
         metrics=["pit_pd"],
     )
 

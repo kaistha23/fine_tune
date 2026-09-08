@@ -13,6 +13,7 @@ class SqlReviewTests(unittest.TestCase):
             obligor_id="CONFIDENTIAL-OBLIGOR",
             date_from=date(2025, 1, 31),
             date_to=date(2025, 12, 31),
+            as_of_date=date(2025, 12, 31),
             metrics=["current_ratio", "pit_pd"],
         )
         packet = build_sql_review_packet(compiler.compile(plan))

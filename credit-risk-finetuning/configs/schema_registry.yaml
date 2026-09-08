@@ -1,5 +1,13 @@
-version: "1.0.0"
+version: "1.1.0"
 default_deny: true
+
+# Columns that carry point-in-time semantics. Every compiled query is filtered on
+# data_cutoff_date, and additionally on model_run_date whenever a model-output column is
+# selected, so a query can only ever see what was knowable at the plan's as_of_date.
+point_in_time:
+  data_cutoff_column: data_cutoff_date
+  model_run_column: model_run_date
+
 tables:
   obligor_monthly:
     grain: obligor_month
@@ -9,6 +17,8 @@ tables:
     allowed_columns:
       obligor_id: {type: string, sensitivity: restricted}
       observation_date: {type: date, sensitivity: internal}
+      data_cutoff_date: {type: date, sensitivity: internal}
+      model_run_date: {type: date, sensitivity: internal}
       portfolio: {type: string, sensitivity: internal}
       jurisdiction: {type: string, sensitivity: internal}
       revenue: {type: number, min: 0, sensitivity: confidential}
@@ -24,11 +34,11 @@ tables:
       outstanding: {type: number, min: 0, sensitivity: confidential}
       days_past_due: {type: integer, min: 0, sensitivity: confidential}
       internal_rating: {type: string, sensitivity: confidential}
-      ttc_pd: {type: probability, min: 0, max: 1, sensitivity: confidential}
-      pit_pd: {type: probability, min: 0, max: 1, sensitivity: confidential}
-      lgd: {type: probability, min: 0, max: 1, sensitivity: confidential}
-      ead: {type: number, min: 0, sensitivity: confidential}
-      ecl: {type: number, min: 0, sensitivity: confidential}
+      ttc_pd: {type: probability, min: 0, max: 1, model_output: true, sensitivity: confidential}
+      pit_pd: {type: probability, min: 0, max: 1, model_output: true, sensitivity: confidential}
+      lgd: {type: probability, min: 0, max: 1, model_output: true, sensitivity: confidential}
+      ead: {type: number, min: 0, model_output: true, sensitivity: confidential}
+      ecl: {type: number, min: 0, model_output: true, sensitivity: confidential}
       stage: {type: integer, allowed: [1, 2, 3], sensitivity: confidential}
       watchlist_flag: {type: boolean, sensitivity: confidential}
       restructuring_flag: {type: boolean, sensitivity: confidential}
@@ -41,6 +51,8 @@ tables:
       obligor_id: {type: string, sensitivity: restricted}
       facility_id: {type: string, sensitivity: restricted}
       observation_date: {type: date, sensitivity: internal}
+      data_cutoff_date: {type: date, sensitivity: internal}
+      model_run_date: {type: date, sensitivity: internal}
       portfolio: {type: string, sensitivity: internal}
       jurisdiction: {type: string, sensitivity: internal}
       facility_limit: {type: number, min: 0, sensitivity: confidential}
@@ -50,38 +62,48 @@ tables:
       collateral_value: {type: number, min: 0, sensitivity: confidential}
       stage: {type: integer, allowed: [1, 2, 3], sensitivity: confidential}
 
+# entity_grain is default-deny: a metric may only be requested at a grain it declares.
 metrics:
   current_ratio:
     portfolios: [sme, corporate]
+    entity_grain: [obligor_month]
     dependencies: [current_assets, current_liabilities]
     formula_id: ratio.current_ratio.v1
   net_debt_to_ebitda:
     portfolios: [sme, corporate]
+    entity_grain: [obligor_month]
     dependencies: [total_debt, cash, ebitda]
     formula_id: ratio.net_debt_to_ebitda.v1
   dscr:
     portfolios: [sme, corporate]
+    entity_grain: [obligor_month]
     dependencies: [operating_cash_flow, debt_service]
     formula_id: ratio.dscr.v1
   interest_coverage:
     portfolios: [sme, corporate]
+    entity_grain: [obligor_month]
     dependencies: [ebitda, interest_expense]
     formula_id: ratio.interest_coverage.v1
   utilisation_pct:
     portfolios: [retail, sme, corporate]
+    entity_grain: [obligor_month, facility_month]
     dependencies: [outstanding, facility_limit]
     formula_id: ratio.utilisation.v1
   pit_pd:
     portfolios: [retail, sme, corporate]
+    entity_grain: [obligor_month]
     source_column: pit_pd
   internal_rating:
     portfolios: [retail, sme, corporate]
+    entity_grain: [obligor_month]
     source_column: internal_rating
   stage:
     portfolios: [retail, sme, corporate]
+    entity_grain: [obligor_month, facility_month]
     source_column: stage
   days_past_due:
     portfolios: [retail, sme, corporate]
+    entity_grain: [obligor_month, facility_month]
     source_column: days_past_due
 
 query_controls:
@@ -90,4 +112,12 @@ query_controls:
   maximum_months: 60
   maximum_metrics: 30
   maximum_result_rows: 120
-  prohibited_sql_keywords: [insert, update, delete, drop, alter, create, attach, copy, export, import, pragma]
+  statement_timeout_seconds: 15
+  memory_limit: 512MB
+  prohibited_sql_keywords: [insert, update, delete, drop, alter, create, attach, copy, export, import, pragma, merge, truncate, grant, revoke, call, install, load, set, reset]
+  allowed_operators: ["=", "<=", ">=", "BETWEEN", "AND"]
+  allowed_joins:
+    - left: obligor_monthly
+      right: facility_monthly
+      on: [obligor_id, observation_date]
+      cardinality: one_to_many

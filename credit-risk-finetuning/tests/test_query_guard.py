@@ -17,6 +17,7 @@ class QueryGuardTests(unittest.TestCase):
             obligor_id="OBL-123",
             date_from=date(2025, 1, 31),
             date_to=date(2025, 12, 31),
+            as_of_date=date(2025, 12, 31),
             metrics=["current_ratio", "pit_pd"],
         )
         compiled = GuardedQueryCompiler(SchemaRegistry(REGISTRY)).compile(plan)
@@ -31,6 +32,7 @@ class QueryGuardTests(unittest.TestCase):
             obligor_id="OBL-1",
             date_from=date(2025, 1, 31),
             date_to=date(2025, 2, 28),
+            as_of_date=date(2025, 2, 28),
             metrics=["current_ratio"],
         )
         with self.assertRaises(QueryGuardError):

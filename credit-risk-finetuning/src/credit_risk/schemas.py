@@ -38,6 +38,7 @@ class QueryPlan(BaseModel):
     facility_id: str | None = Field(default=None, max_length=128)
     date_from: date
     date_to: date
+    as_of_date: date
     metrics: list[str] = Field(min_length=1, max_length=30)
     analysis_type: Literal[
         "credit_deterioration", "ews_analysis", "policy_qa", "email_draft", "factsheet"
@@ -47,6 +48,10 @@ class QueryPlan(BaseModel):
     def validate_dates_and_grain(self) -> "QueryPlan":
         if self.date_from > self.date_to:
             raise ValueError("date_from must not be after date_to")
+        # as_of_date is the point-in-time anchor: it is what the analyst is allowed to know.
+        # Observing past it would leak data that did not exist at decision time.
+        if self.date_to > self.as_of_date:
+            raise ValueError("date_to must not be after as_of_date")
         if self.entity_level == EntityLevel.FACILITY and not self.facility_id:
             raise ValueError("facility_id is required for facility-level queries")
         return self
