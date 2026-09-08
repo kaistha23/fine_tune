@@ -131,7 +131,8 @@ once the adapter is worth serving.
 > **Before trusting a run:** `mlx-community/Qwen3.5-9B-4bit` is a vision-language checkpoint
 > (`Qwen3_5ForConditionalGeneration`, with a vision tower). Confirm the installed mlx-lm loads
 > it text-only, and do not route training through mlx-vlm - its Qwen3.5 LoRA path has an open
-> p1 corruption bug. Fallback ladder: `Qwen3-14B-4bit`, then `Qwen2.5-7B-Instruct-8bit`.
+> p1 corruption bug. Fallback ladder is Qwen3 generation only: `Qwen3.8-27B-4bit` (the 64 GB
+> challenger, borderline for QLoRA), then `Qwen3-14B-4bit`.
 
 ### Architecture-level schema enforcement
 

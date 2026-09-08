@@ -7,8 +7,13 @@
 # WARNING (finding C1): mlx-community/Qwen3.5-9B-4bit is a vision-language checkpoint
 # (Qwen3_5ForConditionalGeneration, model_type qwen3_5, with a vision tower). Confirm the
 # installed mlx-lm loads it text-only before trusting a run, and do not route training
-# through mlx-vlm - its Qwen3.5 LoRA path has an open p1 corruption bug. Fallback ladder:
-# mlx-community/Qwen3-14B-4bit, then mlx-community/Qwen2.5-7B-Instruct-8bit.
+# through mlx-vlm - its Qwen3.5 LoRA path has an open p1 corruption bug.
+#
+# Fallback ladder, Qwen3 generation only:
+#   1. mlx-community/Qwen3.5-9B-4bit    primary QLoRA target
+#   2. mlx-community/Qwen3.8-27B-4bit   64 GB challenger; QLoRA here is borderline and
+#                                       must pass the memory spike before it is trusted
+#   3. mlx-community/Qwen3-14B-4bit     the plans' stable fallback
 model: mlx-community/Qwen3.5-9B-4bit
 train: true
 data: data/training/current
