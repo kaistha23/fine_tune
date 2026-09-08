@@ -2,16 +2,20 @@ from __future__ import annotations
 
 import hashlib
 from typing import Literal
+from uuid import uuid4
 
 import httpx
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from credit_risk.architecture_policy import ArchitecturePolicy, ArchitecturePolicyError
 from credit_risk.factsheet import FactsheetError, build_factsheet
+from credit_risk.feedback import REMEDIATION_ROUTES
 from credit_risk.feedback_store import FeedbackStore
 from credit_risk.guardrails import validate_input, validate_output
+from credit_risk.interaction_store import InteractionNotFound, InteractionStore
 from credit_risk.omlx_client import OMLXClient
+from credit_risk.prompts import PROMPT_VERSION
 from credit_risk.query_guard import (
     CompiledQuery,
     GuardedQueryCompiler,
@@ -23,7 +27,15 @@ from credit_risk.rag.factory import describe as describe_retrieval
 from credit_risk.rag.filters import AccessPolicyError, RetrievalPolicy
 from credit_risk.rag.schemas import AccessContext
 from credit_risk.risk_tiers import gate
-from credit_risk.schemas import EntityLevel, FeedbackRecord, QueryPlan
+from credit_risk.schemas import (
+    AnswerStatus,
+    CreditResponse,
+    EntityLevel,
+    Evidence,
+    FeedbackRecord,
+    InteractionRecord,
+    QueryPlan,
+)
 from credit_risk.settings import settings
 
 app = FastAPI(title="Credit Risk Fine-Tuning Development API", version="0.1.0")
@@ -31,6 +43,7 @@ policy = ArchitecturePolicy(settings.architecture_policy, settings.architecture_
 registry = SchemaRegistry(settings.schema_registry, settings.schema_registry_version)
 compiler = GuardedQueryCompiler(registry)
 feedback_store = FeedbackStore(settings.feedback_path)
+interaction_store = InteractionStore(settings.interactions_path)
 retrieval_policy = RetrievalPolicy(settings.retrieval_policy)
 # Built from settings rather than defaulted: PolicyRetriever's default index is an empty
 # in-memory one, so the deployed API used to retrieve nothing from the Qdrant service it
@@ -266,6 +279,119 @@ def _request_rows(request: QueryValidationRequest) -> dict:
         raise HTTPException(status_code=502, detail="Restricted data service unavailable") from exc
 
 
+class AnalysisFeedbackRequest(BaseModel):
+    """A reviewer's verdict on an answer the system actually served.
+
+    eligible_for_training is absent by design. It is derived from the root cause and the
+    presence of a revalidated correction, never supplied: a caller who could set it could
+    put an unchecked target into the training set, which is the one thing the whole
+    feedback pipeline exists to prevent.
+    """
+
+    interaction_id: str = Field(min_length=1, max_length=128)
+    error_labels: list[Literal[
+        "correct", "correct_style_change", "wrong_retrieval", "unsupported_claim",
+        "numeric_error", "wrong_credit_interpretation", "wrong_jurisdiction",
+        "missing_information_not_identified", "guardrail_failure", "should_have_abstained",
+    ]] = Field(min_length=1)
+    root_cause: Literal[
+        "data", "schema", "query", "calculation", "retrieval", "guardrail", "model_behaviour"
+    ]
+    # The corrected answer, as CreditResponse JSON. Required for a model-behaviour defect:
+    # that is the only root cause retraining can fix, and it cannot be fixed without a
+    # target to learn.
+    corrected_output: str | None = None
+    comment: str | None = Field(default=None, max_length=4000)
+
+
+@app.post("/v1/analyse/feedback")
+def analysis_feedback(request: AnalysisFeedbackRequest) -> dict:
+    """Turn a reviewer's correction into a training-eligible record, or refuse it.
+
+    The correction is revalidated against the evidence that was in context when the
+    original answer was produced - the same rule the SQL review applies, for the same
+    reason. An unchecked correction is worse than no correction: training on a target that
+    cites evidence the model was never shown teaches it to cite from memory, which is
+    precisely the failure the citation guardrail exists to catch.
+    """
+    policy.require(settings.service_role, "record_analysis_feedback")
+
+    try:
+        interaction = interaction_store.get(request.interaction_id)
+    except InteractionNotFound as exc:
+        raise HTTPException(
+            status_code=404,
+            detail="Unknown interaction_id; it was never served or has been rotated out",
+        ) from exc
+
+    trainable_cause = request.root_cause == "model_behaviour"
+    corrected_output = request.corrected_output
+    revalidation: dict[str, object] = {"performed": False}
+
+    if trainable_cause and not corrected_output:
+        raise HTTPException(
+            status_code=422,
+            detail=("A model_behaviour defect needs corrected_output: it is the only root "
+                    "cause retraining can fix, and it cannot be fixed without a target"),
+        )
+
+    if corrected_output:
+        try:
+            corrected = CreditResponse.model_validate_json(corrected_output)
+        except ValidationError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail="corrected_output is not a valid CreditResponse",
+            ) from exc
+
+        evidence = [Evidence.model_validate(item) for item in interaction.evidence]
+        check = validate_output(corrected, evidence, factsheet_case_id=interaction.case_id)
+        revalidation = {"performed": True, "passed": check.passed,
+                        "failures": check.failures}
+        if not check.passed:
+            raise HTTPException(
+                status_code=422,
+                detail={"message": "Correction failed revalidation and was not recorded "
+                                   "as trainable",
+                        "failures": check.failures},
+            )
+
+    record = FeedbackRecord(
+        interaction_id=request.interaction_id,
+        model_id=interaction.model_id,
+        adapter_version=interaction.adapter_version,
+        dataset_version=interaction.dataset_version,
+        portfolio=interaction.portfolio,
+        task_type=interaction.task_type,
+        input_case_id=interaction.case_id,
+        retrieved_evidence_ids=[
+            str(item.get("evidence_id", "")) for item in interaction.evidence],
+        input_question=interaction.question,
+        input_factsheet=interaction.factsheet,
+        input_evidence=interaction.evidence,
+        original_output=interaction.original_output or "",
+        error_labels=list(request.error_labels),
+        corrected_output=corrected_output,
+        root_cause=request.root_cause,
+        # Derived, never taken from the request: a model-behaviour defect with a
+        # correction that passed revalidation, and nothing else.
+        eligible_for_training=bool(trainable_cause and corrected_output),
+        sql_review_comment=request.comment,
+    )
+    feedback_store.append(record)
+
+    return {
+        "interaction_id": record.interaction_id,
+        "root_cause": record.root_cause,
+        "eligible_for_training": record.eligible_for_training,
+        "revalidation": revalidation,
+        # Says where a non-trainable defect actually goes, so a reviewer is not left
+        # thinking a routed bug was ignored.
+        "remediation_route": REMEDIATION_ROUTES.get(record.root_cause, "unrouted"),
+        "recorded": True,
+    }
+
+
 @app.post("/v1/query/fetch")
 def fetch_data(request: QueryValidationRequest) -> dict:
     return _request_rows(request)
@@ -314,6 +440,41 @@ def run() -> None:
     uvicorn.run("credit_risk.api:app", host="127.0.0.1", port=8080, reload=False)
 
 
+def _record_interaction(request: AnalysisRequest, sheet, evidence: list,
+                        answer_status: str, original_output: str | None,
+                        guardrail_failures: list[str], release: str) -> str:
+    """Persist what was served, and return the handle a correction will name.
+
+    Recorded for abstentions too. An unnecessary abstention is a model-behaviour defect
+    like any other, and if it cannot be corrected the loop only ever learns from answers
+    the model was willing to give.
+
+    The factsheet is stored, never the monthly rows it was built from: the factsheet is
+    what the model actually saw, and the rows stay inside the data service.
+    """
+    policy.require(settings.service_role, "record_interaction")
+    interaction_id = f"IX-{uuid4().hex[:16]}"
+    interaction_store.append(InteractionRecord(
+        interaction_id=interaction_id,
+        model_id=settings.omlx_model,
+        adapter_version=settings.adapter_version,
+        dataset_version=settings.dataset_version,
+        prompt_version=PROMPT_VERSION,
+        portfolio=request.query_plan.portfolio,
+        jurisdiction=request.query_plan.jurisdiction,
+        task_type=request.query_plan.analysis_type,
+        case_id=sheet.case_id,
+        question=request.user_text,
+        factsheet=sheet.model_dump(mode="json"),
+        evidence=[item.model_dump(mode="json") for item in evidence],
+        answer_status=AnswerStatus(answer_status),
+        original_output=original_output,
+        output_guardrail_failures=guardrail_failures,
+        action_release=release,
+    ))
+    return interaction_id
+
+
 @app.post("/v1/analyse")
 def analyse(request: AnalysisRequest) -> dict:
     """The full guarded path: rows -> factsheet -> evidence -> model -> gate.
@@ -348,6 +509,9 @@ def analyse(request: AnalysisRequest) -> dict:
         # Abstention is a correct outcome, not an error. The factsheet is still returned
         # so the analyst can see what the numbers say without a cited narrative.
         return {
+            "interaction_id": _record_interaction(
+                request, sheet, evidence, "INSUFFICIENT_EVIDENCE", None,
+                ["insufficient_evidence"], "blocked"),
             "answer_status": "INSUFFICIENT_EVIDENCE",
             "factsheet": sheet.model_dump(mode="json"),
             "retrieval": {k: v for k, v in retrieval.items() if k != "evidence"},
@@ -382,6 +546,11 @@ def analyse(request: AnalysisRequest) -> dict:
                    "reasons": sorted(set(control["reasons"] + output_check.failures))}
 
     return {
+        # The handle a correction names. Without it an analyst who sees a wrong answer has
+        # nothing to attach the correction to, and the training loop has no input.
+        "interaction_id": _record_interaction(
+            request, sheet, evidence, response.answer_status.value,
+            response.model_dump_json(), output_check.failures, control["release"]),
         "answer_status": response.answer_status.value,
         "factsheet": sheet.model_dump(mode="json"),
         "retrieval": {k: v for k, v in retrieval.items() if k != "evidence"},

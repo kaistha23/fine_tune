@@ -8,7 +8,7 @@ POLICY = Path(__file__).parents[1] / "configs" / "architecture_policy.yaml"
 
 class ArchitecturePolicyTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.policy = ArchitecturePolicy(POLICY, "1.1.0")
+        self.policy = ArchitecturePolicy(POLICY, "1.2.0")
 
     def test_api_cannot_execute_sql(self) -> None:
         with self.assertRaises(ArchitecturePolicyError):

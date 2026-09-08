@@ -16,6 +16,7 @@ Run `uv run python -m unittest discover -s tests -v` - 113 tests - and `docker c
 | API/data-service separation, API has no database mount | Working |
 | Human SQL review: packet, approve/reject, revalidated corrections, persisted feedback | Working |
 | Deterministic ratios and the compact credit factsheet | Working |
+| Correction loop: served answer to revalidated training example | Working; run end to end against real services |
 | Feedback triage routing every root cause to an owner | Working |
 | SFT dataset builder in mlx-lm chat format with provenance | Working |
 | MLX-LM QLoRA train and fuse | Working; run end to end on Apple Silicon (load, 50-iter QLoRA, fuse, reload) on synthetic data |
@@ -38,7 +39,8 @@ Run `uv run python -m unittest discover -s tests -v` - 113 tests - and `docker c
 | `POST /v1/query/review` | Record approve/reject; revalidate a corrected plan; persist feedback |
 | `POST /v1/query/fetch` | Approved rows via the restricted data service (obligor, facility or suppressed portfolio cohort) |
 | `POST /v1/factsheet` | Approved rows reduced to the compact factsheet the model is shown |
-| `POST /v1/analyse` | The full guarded path: rows, factsheet, evidence, model, output check, action gate |
+| `POST /v1/analyse` | The full guarded path: rows, factsheet, evidence, model, output check, action gate. Returns an `interaction_id` |
+| `POST /v1/analyse/feedback` | A reviewer's correction on a served answer, revalidated before it can become training data |
 
 ## Target architecture
 
@@ -250,6 +252,37 @@ and numerical disagreement are zero-tolerance.
 A candidate adapter is promoted only if it clears every gate, improves something, and
 regresses no portfolio. The champion is never overwritten - `compare_adapters` returns a
 decision, it does not perform one.
+
+### The correction loop
+
+`TRAINING_ROOT_CAUSES` is `{"model_behaviour"}`, and until now nothing could produce a
+record with that cause: `/v1/query/review` only yields schema, query, calculation and data
+causes, and `/v1/analyse` returned no handle to attach a correction to. The loop had no
+input, so no correction an analyst wrote could ever reach training.
+
+`/v1/analyse` now returns an `interaction_id` and stores what the model was shown - the
+question, the factsheet, the evidence, and what it answered. Abstentions are stored too: an
+unnecessary abstention is a model-behaviour defect like any other, and if it cannot be
+corrected the loop only ever learns from answers the model was willing to give. The
+factsheet is stored, never the monthly rows it came from; those stay inside the data
+service.
+
+`POST /v1/analyse/feedback` takes a correction against that id and **revalidates it before
+recording it as trainable** - the same rule the SQL review applies, for the same reason. A
+correction citing evidence the model was never shown is refused with the failing citation
+named, because training on it teaches the model to cite from memory, which is exactly the
+failure the citation guardrail exists to catch. `eligible_for_training` is derived from the
+root cause and a passing revalidation, never supplied by the caller.
+
+Defects retraining cannot fix are still recorded, and the response says where they go
+(`rag_index_backlog`, `schema_and_query_backlog`, and so on) so a reviewer is not left
+thinking a routed bug was ignored.
+
+The API may write feedback and may not read it back: the service that produced an answer
+does not also decide what is trainable. Both producers - the seed dataset builder and the
+feedback worker - write `train/valid/test.jsonl` plus provenance sidecars, split on the
+same obligor hash, so the two can be merged and a borrower cannot sit in train from one
+file and test from the other.
 
 ### Human SQL review
 

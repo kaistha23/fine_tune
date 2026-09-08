@@ -1,4 +1,4 @@
-version: "1.1.0"
+version: "1.2.0"
 default_deny: true
 
 # Capabilities describe what each service's code actually does, not an aspiration.
@@ -14,6 +14,10 @@ roles:
       - record_sql_review
       - call_model
       - validate_model_output
+      # The API records what it served and the corrections analysts write against it.
+      # Both are writes to its own append-only logs, never to curated data.
+      - record_interaction
+      - record_analysis_feedback
     denied:
       - execute_sql
       - execute_read_only_sql
@@ -21,6 +25,11 @@ roles:
       - access_database_file
       - mutate_schema
       - train_model
+      # The API writes feedback; only the worker reads it back and decides what is
+      # trainable. Keeping the read denied here is what stops the service that produced an
+      # answer from also grading it.
+      - read_feedback
+      - write_training_batch
   data_service:
     allowed:
       - validate_query_plan

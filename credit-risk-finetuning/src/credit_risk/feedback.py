@@ -6,7 +6,7 @@ from collections import Counter
 from pathlib import Path
 
 from credit_risk.architecture_policy import ArchitecturePolicy
-from credit_risk.dataset import DEFAULT_QUESTION
+from credit_risk.dataset import DEFAULT_QUESTION, SPLITS, stable_split
 from credit_risk.prompts import PROMPT_VERSION, build_messages
 from credit_risk.schemas import FeedbackRecord
 from credit_risk.settings import settings
@@ -36,14 +36,30 @@ def load_feedback(path: Path) -> list[FeedbackRecord]:
 
 
 def build_training_batch(records: list[FeedbackRecord]) -> tuple[list[dict], dict]:
+    """Route every record, and turn the trainable ones into examples.
+
+    Deduped by interaction here rather than refused at the API. Two reviewers correcting
+    the same answer is legitimate and worth keeping for audit, but both records carried
+    the same example_id, so the batch silently weighted that interaction twice. The later
+    correction wins: it was written with sight of the earlier one.
+    """
+    by_interaction: dict[str, FeedbackRecord] = {}
+    for record in records:
+        by_interaction[record.interaction_id] = record
+    superseded = len(records) - len(by_interaction)
+
     eligible: list[dict] = []
-    root_causes = Counter(record.root_cause for record in records)
-    error_labels = Counter(label for record in records for label in record.error_labels)
+    root_causes: Counter[str]
+    error_labels: Counter[str]
     routed: Counter[str] = Counter()
     sql_reviews: Counter[str] = Counter()
 
+    root_causes = Counter(r.root_cause for r in by_interaction.values())
+    error_labels = Counter(
+        label for r in by_interaction.values() for label in r.error_labels)
+
     unreconstructable = 0
-    for record in records:
+    for record in by_interaction.values():
         routed[REMEDIATION_ROUTES.get(record.root_cause, "unrouted")] += 1
         if record.sql_review_status != "not_reviewed":
             sql_reviews[record.sql_review_status] += 1
@@ -64,6 +80,9 @@ def build_training_batch(records: list[FeedbackRecord]) -> tuple[list[dict], dic
 
         eligible.append({
             "example_id": f"feedback-{record.interaction_id}",
+            # Carried so the batch can be split on the same obligor hash as the seed
+            # dataset. Written to the provenance sidecar, never into the training line.
+            "obligor_id": str(record.input_factsheet.get("obligor_id", record.input_case_id)),
             "portfolio": record.portfolio.value,
             "task_type": record.task_type,
             "messages": [
@@ -80,6 +99,8 @@ def build_training_batch(records: list[FeedbackRecord]) -> tuple[list[dict], dic
 
     report = {
         "input_records": len(records),
+        # Same interaction corrected more than once. Kept in the log, counted once here.
+        "superseded_by_later_correction": superseded,
         "training_examples": len(eligible),
         # Surfaced rather than silent: these are corrections a reviewer took the trouble to
         # write that cannot be trained on, which is a defect in what the API records at
@@ -99,9 +120,12 @@ def build_training_batch(records: list[FeedbackRecord]) -> tuple[list[dict], dic
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", type=Path)
-    parser.add_argument("output", type=Path)
+    parser.add_argument(
+        "output_dir", type=Path,
+        help="Directory to write train/valid/test.jsonl and their provenance sidecars, "
+             "in the same layout as credit_risk.dataset so the two can be merged")
     args = parser.parse_args()
 
     # The worker's role is declared in the policy; enforce it here rather than trusting
@@ -112,10 +136,33 @@ def main() -> None:
     policy.require(settings.service_role, "write_training_batch")
 
     examples, report = build_training_batch(load_feedback(args.input))
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    with args.output.open("w", encoding="utf-8") as handle:
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+
+    chat = {s: (args.output_dir / f"{s}.jsonl").open("w", encoding="utf-8")
+            for s in SPLITS}
+    meta = {s: (args.output_dir / f"{s}.provenance.jsonl").open("w", encoding="utf-8")
+            for s in SPLITS}
+    counts = dict.fromkeys(SPLITS, 0)
+    try:
         for example in examples:
-            handle.write(json.dumps(example, ensure_ascii=False) + "\n")
+            # Split on the same obligor hash the seed dataset uses. If the two producers
+            # split independently, a borrower corrected in production could sit in train
+            # from one file and test from the other, and the test score would be reported
+            # against data the adapter had already seen.
+            split = stable_split(example["obligor_id"])
+            chat[split].write(
+                json.dumps({"messages": example["messages"]}, ensure_ascii=False) + "\n")
+            # Provenance to a sidecar, never into the training line: mlx-lm reads each
+            # line as a training record and unknown keys are not guaranteed to be ignored.
+            meta[split].write(json.dumps(
+                {k: v for k, v in example.items() if k != "messages"},
+                ensure_ascii=False) + "\n")
+            counts[split] += 1
+    finally:
+        for handle in list(chat.values()) + list(meta.values()):
+            handle.close()
+
+    report["splits"] = counts
     print(json.dumps(report, indent=2))
 
 

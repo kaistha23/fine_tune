@@ -1,6 +1,10 @@
 import json
+import os
+import pathlib
+import tempfile
 import unittest
 
+from credit_risk.dataset import SPLITS, stable_split
 from credit_risk.feedback import build_training_batch
 from credit_risk.prompts import PROMPT_VERSION, SYSTEM_PROMPT
 from credit_risk.schemas import FeedbackRecord, Portfolio
@@ -84,6 +88,68 @@ class ReconstructedInputTests(unittest.TestCase):
         examples, _ = build_training_batch([record("1")])
         self.assertEqual(examples[0]["prompt_version"], PROMPT_VERSION)
 
+
+
+class BatchLayoutTests(unittest.TestCase):
+    """The worker's output must be mergeable with the seed dataset, and trainable as-is."""
+
+    def _write_batch(self, directory) -> dict:
+        import subprocess
+        import sys
+        feedback = directory / "feedback.jsonl"
+        feedback.write_text(record("1").model_dump_json() + "\n", encoding="utf-8")
+        env = dict(os.environ, CR_SERVICE_ROLE="feedback_worker")
+        result = subprocess.run(
+            [sys.executable, "-m", "credit_risk.feedback",
+             str(feedback), str(directory / "batch")],
+            capture_output=True, text=True, env=env, check=True)
+        return json.loads(result.stdout)
+
+    def test_it_writes_the_same_splits_as_the_seed_dataset(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = pathlib.Path(tmp)
+            self._write_batch(directory)
+            for split in SPLITS:
+                self.assertTrue((directory / "batch" / f"{split}.jsonl").is_file())
+                self.assertTrue(
+                    (directory / "batch" / f"{split}.provenance.jsonl").is_file())
+
+    def test_the_training_line_carries_only_messages(self) -> None:
+        # mlx-lm reads each line as a training record and unknown keys are not guaranteed
+        # to be ignored, which is why provenance goes to a sidecar. The feedback batch was
+        # writing example_id, portfolio, task_type, source and prompt_version inline.
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = pathlib.Path(tmp)
+            self._write_batch(directory)
+            for split in SPLITS:
+                for line in (directory / "batch" / f"{split}.jsonl").read_text().splitlines():
+                    if line.strip():
+                        self.assertEqual(sorted(json.loads(line)), ["messages"])
+
+    def test_provenance_lands_in_the_sidecar(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = pathlib.Path(tmp)
+            self._write_batch(directory)
+            lines = [
+                line for split in SPLITS
+                for line in (directory / "batch" / f"{split}.provenance.jsonl")
+                .read_text().splitlines() if line.strip()
+            ]
+            self.assertEqual(len(lines), 1)
+            self.assertIn("example_id", json.loads(lines[0]))
+
+    def test_an_obligor_cannot_span_train_and_test_across_producers(self) -> None:
+        # Both producers split on the same obligor hash. If they split independently, a
+        # borrower corrected in production could sit in train from one file and test from
+        # the other, and the test score would be measured on data already trained on.
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = pathlib.Path(tmp)
+            report = self._write_batch(directory)
+            expected = stable_split(FACTSHEET["obligor_id"])
+            self.assertEqual(report["splits"][expected], 1)
+            for split in SPLITS:
+                if split != expected:
+                    self.assertEqual(report["splits"][split], 0)
 
 if __name__ == "__main__":
     unittest.main()

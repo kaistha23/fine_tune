@@ -134,6 +134,37 @@ class CreditResponse(BaseModel):
     human_approval_required: bool = True
 
 
+class InteractionRecord(BaseModel):
+    """What the model was shown and what it answered, kept so a correction can be trained on.
+
+    Without this the feedback loop has no input: FeedbackRecord carried only an
+    input_case_id, and an identifier cannot reconstruct a training example. Storing the
+    factsheet rather than the rows it came from is deliberate - the factsheet is the
+    derived artefact the model actually saw, and the raw monthly rows never leave the data
+    service.
+    """
+
+    interaction_id: str = Field(min_length=1, max_length=128)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    model_id: str
+    adapter_version: str
+    dataset_version: str
+    prompt_version: str
+    portfolio: Portfolio
+    jurisdiction: Jurisdiction
+    task_type: str
+    case_id: str
+    question: str
+    factsheet: dict[str, Any]
+    evidence: list[dict[str, Any]] = Field(default_factory=list)
+    answer_status: AnswerStatus
+    # The model's answer as served, serialised. None when the path abstained before the
+    # model was reached, which is itself a correctable behaviour.
+    original_output: str | None = None
+    output_guardrail_failures: list[str] = Field(default_factory=list)
+    action_release: str = ""
+
+
 class FeedbackRecord(BaseModel):
     interaction_id: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
