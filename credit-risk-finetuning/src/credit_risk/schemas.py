@@ -144,6 +144,14 @@ class FeedbackRecord(BaseModel):
     task_type: str
     input_case_id: str
     retrieved_evidence_ids: list[str] = Field(default_factory=list)
+    # What the model was actually shown. Without these a feedback record cannot be turned
+    # back into a training example: the batch builder had only input_case_id and emitted
+    # "Case reference: FB-123" as the user turn, which teaches the model to produce a full
+    # credit assessment from an identifier containing none of the case data. Storing the
+    # shown context is also what lets a reviewer see which input produced the bad output.
+    input_question: str = ""
+    input_factsheet: dict[str, Any] | None = None
+    input_evidence: list[dict[str, Any]] = Field(default_factory=list)
     original_output: str
     error_labels: list[Literal[
         "correct", "correct_style_change", "wrong_retrieval", "unsupported_claim",

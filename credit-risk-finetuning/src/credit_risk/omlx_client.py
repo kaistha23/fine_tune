@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import json
 from typing import Any
 
 import httpx
 
+from credit_risk.prompts import build_messages
 from credit_risk.schemas import CreditResponse, Evidence
 
 
@@ -25,29 +25,12 @@ class OMLXClient:
 
     def generate_credit_response(self, question: str, factsheet: dict[str, Any],
                                  evidence: list[Evidence]) -> CreditResponse:
-        context = {
-            "factsheet": factsheet,
-            "evidence": [item.model_dump(mode="json") for item in evidence],
-        }
-        response_schema = CreditResponse.model_json_schema()
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are a credit-risk advisory copilot. Use only supplied facts and evidence. "
-                    "Separate facts from inference. Every fact must cite: use an evidence_id from "
-                    "the evidence list for anything drawn from policy or regulation, and the "
-                    "factsheet's case_id for anything drawn from the obligor's own data. Return "
-                    "JSON matching the supplied schema. Set human_approval_required=true for "
-                    "recommendations."
-                ),
-            },
-            {
-                "role": "user",
-                "content": json.dumps({"question": question, "context": context,
-                                       "response_schema": response_schema}),
-            },
-        ]
+        messages = build_messages(
+            question=question,
+            factsheet=factsheet,
+            evidence=[item.model_dump(mode="json") for item in evidence],
+            response_schema=CreditResponse.model_json_schema(),
+        )
         with httpx.Client(timeout=self.timeout) as client:
             result = client.post(
                 f"{self.base_url}/chat/completions",

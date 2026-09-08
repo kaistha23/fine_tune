@@ -6,6 +6,8 @@ from collections import Counter
 from pathlib import Path
 
 from credit_risk.architecture_policy import ArchitecturePolicy
+from credit_risk.dataset import DEFAULT_QUESTION
+from credit_risk.prompts import PROMPT_VERSION, build_messages
 from credit_risk.schemas import FeedbackRecord
 from credit_risk.settings import settings
 
@@ -40,29 +42,49 @@ def build_training_batch(records: list[FeedbackRecord]) -> tuple[list[dict], dic
     routed: Counter[str] = Counter()
     sql_reviews: Counter[str] = Counter()
 
+    unreconstructable = 0
     for record in records:
         routed[REMEDIATION_ROUTES.get(record.root_cause, "unrouted")] += 1
         if record.sql_review_status != "not_reviewed":
             sql_reviews[record.sql_review_status] += 1
-        if (
+        if not (
             record.eligible_for_training
             and record.root_cause in TRAINING_ROOT_CAUSES
             and record.corrected_output
         ):
-            eligible.append({
-                "example_id": f"feedback-{record.interaction_id}",
-                "portfolio": record.portfolio.value,
-                "task_type": record.task_type,
-                "messages": [
-                    {"role": "user", "content": f"Case reference: {record.input_case_id}"},
-                    {"role": "assistant", "content": record.corrected_output},
-                ],
-                "source": "validated_feedback",
-            })
+            continue
+
+        # A record that did not capture what the model was shown cannot become a training
+        # example. It is skipped and counted, not emitted with a placeholder: the previous
+        # behaviour put "Case reference: FB-123" in the user turn, which trains the model
+        # to produce a full assessment from an identifier - teaching it to invent.
+        if record.input_factsheet is None:
+            unreconstructable += 1
+            continue
+
+        eligible.append({
+            "example_id": f"feedback-{record.interaction_id}",
+            "portfolio": record.portfolio.value,
+            "task_type": record.task_type,
+            "messages": [
+                *build_messages(
+                    question=record.input_question or DEFAULT_QUESTION,
+                    factsheet=record.input_factsheet,
+                    evidence=record.input_evidence,
+                ),
+                {"role": "assistant", "content": record.corrected_output},
+            ],
+            "source": "validated_feedback",
+            "prompt_version": PROMPT_VERSION,
+        })
 
     report = {
         "input_records": len(records),
         "training_examples": len(eligible),
+        # Surfaced rather than silent: these are corrections a reviewer took the trouble to
+        # write that cannot be trained on, which is a defect in what the API records at
+        # feedback time, not in the correction.
+        "skipped_no_captured_input": unreconstructable,
         "root_causes": dict(root_causes),
         "error_labels": dict(error_labels),
         # Every non-training record still has an owner. Dropping them silently is what

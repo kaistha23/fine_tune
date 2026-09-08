@@ -16,13 +16,21 @@ import json
 from pathlib import Path
 from typing import Any
 
-SYSTEM_PROMPT = (
-    "You are a credit-risk advisory copilot. Separate facts, model outputs, inference and "
-    "recommendations. Do not invent evidence, thresholds or customer facts. Identify missing "
-    "information and abstain when evidence is insufficient."
+from credit_risk.prompts import PROMPT_VERSION, build_messages
+
+# Used when an example carries no question of its own. Stated once so every such
+# example is identical rather than varying with whoever wrote the file.
+DEFAULT_QUESTION = (
+    "Assess this obligor's credit risk position and state what the applicable "
+    "guidance requires."
 )
 
-DATASET_VERSION = "v1.0.0"
+# The prompt lives in credit_risk.prompts so training and inference cannot drift. They had
+# drifted: this module used its own wording and passed the bare case as the user turn,
+# while the server sent {question, context, response_schema}. With mask_prompt the loss is
+# on the assistant turn only, so the adapter was learning to emit a target conditioned on
+# an input shape production never sends.
+DATASET_VERSION = "v2.0.0"
 SPLITS = ("train", "valid", "test")
 
 
@@ -36,21 +44,36 @@ def stable_split(obligor_id: str) -> str:
     return "test"
 
 
-def build_sft_record(case: dict[str, Any], target: str, task_type: str) -> dict[str, Any]:
+def build_sft_record(case: dict[str, Any], target: str, task_type: str,
+                    question: str = "", evidence: list[dict[str, Any]] | None = None,
+                    ) -> dict[str, Any]:
+    """One training example, in exactly the shape the server sends at inference.
+
+    `case` is the factsheet the model is shown. `evidence` is the retrieved policy passages
+    that were in context when the target was written - an example whose target cites a
+    clause that was not in its own context teaches the model to cite from memory, which is
+    the failure the citation guardrail exists to catch.
+
+    The response schema is deliberately absent: it is large, identical on every example, and
+    including it would spend most of the sequence budget on a constant. The server sends it
+    at inference, so the model sees strictly more than it trained on rather than less.
+    """
     obligor_id = str(case["obligor_id"])
+    messages = build_messages(
+        question=question or DEFAULT_QUESTION,
+        factsheet=case,
+        evidence=evidence or [],
+    )
     return {
         "example_id": f"SFT-{hashlib.sha256((obligor_id + task_type).encode()).hexdigest()[:12]}",
         "obligor_id": obligor_id,
         "portfolio": case["portfolio"],
         "task_type": task_type,
         "jurisdiction": case["jurisdiction"],
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": json.dumps(case, ensure_ascii=False)},
-            {"role": "assistant", "content": target},
-        ],
+        "messages": [*messages, {"role": "assistant", "content": target}],
         "split": stable_split(obligor_id),
         "dataset_version": DATASET_VERSION,
+        "prompt_version": PROMPT_VERSION,
     }
 
 
