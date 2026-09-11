@@ -13,16 +13,17 @@ x-service-hardening: &service-hardening
 
 x-common-environment: &common-environment
   CR_SCHEMA_REGISTRY: /app/configs/schema_registry.yaml
-  CR_SCHEMA_REGISTRY_VERSION: "1.1.0"
+  CR_SCHEMA_REGISTRY_VERSION: "1.2.0"
   CR_ARCHITECTURE_POLICY: /app/configs/architecture_policy.yaml
-  CR_ARCHITECTURE_POLICY_VERSION: "1.1.0"
-  CR_SERVICE_TOKEN: ${CR_SERVICE_TOKEN:-local-dev-only-change-me}
+  CR_ARCHITECTURE_POLICY_VERSION: "1.2.0"
+  CR_SERVICE_TOKEN: ${CR_SERVICE_TOKEN:?Set CR_SERVICE_TOKEN}
 
 services:
   api:
     <<: *service-hardening
     build:
       context: .
+      target: runtime
     command: ["uvicorn", "credit_risk.api:app", "--host", "0.0.0.0", "--port", "8080"]
     environment:
       <<: *common-environment
@@ -30,6 +31,16 @@ services:
       CR_DATA_SERVICE_URL: http://data-service:8081
       CR_OMLX_BASE_URL: http://host.docker.internal:9905/v1
       CR_QDRANT_URL: http://qdrant:6333
+      CR_REVIEWERS: ${CR_REVIEWERS:?Configure reviewers}
+      CR_AUDIT_STORE_PATH: /audit/interactions.sqlite3
+      # Embeddings come from the native oMLX server, not from inside this container: the
+      # API image has no Metal. Unset falls back to the hashing placeholder, which is not
+      # semantic - /health reports which is in use.
+      CR_EMBEDDING_MODEL: ${CR_EMBEDDING_MODEL:-}
+      # Never a literal. Supplied from the host environment or a .env file kept out of git.
+      CR_OMLX_API_KEY: ${CR_OMLX_API_KEY:-}
+    volumes:
+      - ./data/audit/api:/audit:rw
     ports:
       - "127.0.0.1:8080:8080"
     networks:
@@ -50,16 +61,19 @@ services:
     <<: *service-hardening
     build:
       context: .
+      target: runtime
     command: ["uvicorn", "credit_risk.data_service:app", "--host", "0.0.0.0", "--port", "8081"]
     environment:
       <<: *common-environment
       CR_SERVICE_ROLE: data_service
       CR_DATABASE_PATH: /data/credit_risk.duckdb
       CR_QUERY_TIMEOUT_SECONDS: "15"
+      CR_REVIEW_STORE_PATH: /audit/reviews.sqlite3
     expose:
       - "8081"
     volumes:
       - ./data/curated:/data:ro
+      - ./data/audit/reviews:/audit:rw
     networks:
       - restricted-data
     healthcheck:
@@ -72,7 +86,7 @@ services:
   # gets the rest of the hardening the other services have. No host port: it is reachable
   # only from the API over the internal network.
   qdrant:
-    image: qdrant/qdrant:v1.13.2
+    image: qdrant/qdrant:v1.19.1
     restart: unless-stopped
     init: true
     security_opt:
@@ -91,17 +105,22 @@ services:
     profiles: ["batch"]
     build:
       context: .
+      target: runtime
     command:
       - python
       - -m
       - credit_risk.feedback
-      - /feedback/feedback.jsonl
-      - /training/feedback_batch.jsonl
+      - /feedback/interactions.sqlite3
+      - /training/candidate-batch
+      - --exclusions
+      - /training/gold_exclusions.json
+      - --out-of-time-from
+      - "${CR_OUT_OF_TIME_FROM:-2025-01-01}"
     environment:
       <<: *common-environment
       CR_SERVICE_ROLE: feedback_worker
     volumes:
-      - ./data/feedback:/feedback:ro
+      - ./data/audit/api:/feedback:ro
       - ./data/training:/training:rw
     networks:
       - batch-only
@@ -110,8 +129,9 @@ services:
   tests:
     build:
       context: .
+      target: tests
     profiles: ["test"]
-    command: ["python", "-m", "unittest", "discover", "-s", "tests", "-v"]
+    command: ["python", "-m", "pytest", "-q", "-p", "no:cacheprovider"]
     environment:
       <<: *common-environment
       CR_SERVICE_ROLE: api_gateway
@@ -124,6 +144,7 @@ services:
       - ALL
     tmpfs:
       - /tmp:size=128m,mode=1777
+      - /app/data/curated:uid=100,gid=101,mode=1777
     networks:
       - test-only
     restart: "no"

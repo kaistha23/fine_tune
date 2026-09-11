@@ -9,6 +9,7 @@ Order matters and is the whole point:
 4. Re-run guardrails.validate_retrieval on what came back, as defence in depth. It should
    have nothing left to find; if it does, that is a bug in the filter, not a save.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -75,25 +76,40 @@ class PolicyRetriever:
         top_k = int(settings["top_k"])
         selected = fused[:top_k]
 
-        # Normalise fusion scores into [0,1] so the evidence threshold is meaningful.
-        best = selected[0][1] if selected else 0.0
+        # RRF ranks candidates; it is not a probability of evidence support.
+        # Use absolute cosine only as a conservative candidate gate. Calibration is
+        # separately required before a benchmark may support promotion.
+        dense_scores = {chunk.chunk_id: score for chunk, score in dense}
+        lexical_ids = {chunk.chunk_id for chunk, score in lexical if score > 0}
         evidence = [
-            to_evidence(chunk, (score / best) if best else 0.0)
-            for chunk, score in selected
+            to_evidence(chunk, dense_scores.get(chunk.chunk_id, 0.0))
+            for chunk, _ in selected
+            if dense_scores.get(chunk.chunk_id, 0.0) >= float(settings["min_score"])
+            and chunk.chunk_id in lexical_ids
         ]
+        budget = int(settings["max_context_chars"])
+        bounded = []
+        for item in evidence:
+            if len(item.text) <= budget:
+                bounded.append(item)
+                budget -= len(item.text)
+        evidence = bounded
 
         guardrail = validate_retrieval(
-            evidence, context.jurisdiction,
-            float(settings["min_score"]), context.as_of_date,
+            evidence,
+            context.jurisdiction,
+            float(settings["min_score"]),
+            context.as_of_date,
         )
         # The pre-search filter should make cross-jurisdiction and effective-date failures
         # impossible. If one appears here the filter is broken, so fail loudly.
-        hard = [f for f in guardrail.failures
-                if f.startswith(("cross_jurisdiction", "not_yet_effective", "superseded"))]
+        hard = [
+            f
+            for f in guardrail.failures
+            if f.startswith(("cross_jurisdiction", "not_yet_effective", "superseded"))
+        ]
         if hard:
-            raise RetrievalError(
-                f"Pre-search access filter did not hold: {sorted(hard)}"
-            )
+            raise RetrievalError(f"Pre-search access filter did not hold: {sorted(hard)}")
 
         sufficient = bool(evidence) and not guardrail.failures
         return {
@@ -102,6 +118,8 @@ class PolicyRetriever:
             "collection": predicate.collection,
             "access_filter": predicate.describe,
             "retrieved": len(evidence),
+            "relevance_calibrated": False,
+            "score_kind": "cosine_candidate_similarity",
             "evidence": evidence,
             "answer_status": "ANSWERED" if sufficient else "INSUFFICIENT_EVIDENCE",
             "guardrail_failures": guardrail.failures,

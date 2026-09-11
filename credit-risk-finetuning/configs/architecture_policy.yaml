@@ -1,26 +1,35 @@
-version: "1.1.0"
+version: "1.2.0"
 default_deny: true
 
 # Capabilities describe what each service's code actually does, not an aspiration.
-# The API does build a parameterised SQL template in memory - that is how the reviewer is
-# shown it - but it can never execute one or reach the database file.
+# The data service compiles SQL. The API validates plans and displays the returned
+# review packet; it cannot compile SQL, execute it or reach the database file.
 roles:
   api_gateway:
     allowed:
       - validate_query_plan
-      - compile_parameterised_sql_for_review
       - view_parameterised_sql
       - request_data_service
       - record_sql_review
       - call_model
       - validate_model_output
+      # The API records what it served and the corrections analysts write against it.
+      # Both are writes to its own append-only logs, never to curated data.
+      - record_interaction
+      - record_analysis_feedback
     denied:
+      - compile_parameterised_sql_for_review
       - execute_sql
       - execute_read_only_sql
       - edit_and_execute_sql
       - access_database_file
       - mutate_schema
       - train_model
+      # The API writes feedback; only the worker reads it back and decides what is
+      # trainable. Keeping the read denied here is what stops the service that produced an
+      # answer from also grading it.
+      - read_feedback
+      - write_training_batch
   data_service:
     allowed:
       - validate_query_plan

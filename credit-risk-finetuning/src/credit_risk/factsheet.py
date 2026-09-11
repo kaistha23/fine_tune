@@ -6,8 +6,10 @@ is where deterministic Python owns every number before an LLM is allowed near it
 
 Both plans are explicit that hundreds of raw columns must not be pasted into a prompt.
 """
+
 from __future__ import annotations
 
+import hashlib
 from datetime import date
 from typing import Any
 
@@ -17,11 +19,15 @@ from credit_risk.calculations import (
     percentage_point_change,
     relative_change_pct,
 )
-from credit_risk.schemas import CreditFactsheet, MetricValue, QueryPlan
+from credit_risk.schemas import CreditFactsheet, EntityLevel, MetricValue, QueryPlan
 
 # Columns reported as the obligor's position now, when present at the queried grain.
 POSITION_COLUMNS = (
-    "outstanding", "facility_limit", "days_past_due", "internal_rating", "stage",
+    "outstanding",
+    "facility_limit",
+    "days_past_due",
+    "internal_rating",
+    "stage",
 )
 # Risk-model outputs are reported, never recomputed. The LLM must not derive these.
 MODEL_OUTPUT_COLUMNS = ("ttc_pd", "pit_pd", "lgd", "ead", "ecl")
@@ -48,17 +54,17 @@ def _observation_date(row: dict[str, Any]) -> date | None:
 
 
 def _sorted_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return sorted(rows, key=lambda row: (_observation_date(row) or date.min))
+    return sorted(rows, key=lambda row: _observation_date(row) or date.min)
 
 
-def build_trends(first: dict[str, Any], last: dict[str, Any],
-                 metrics: dict[str, MetricValue]) -> dict[str, Any]:
+def build_trends(
+    first: dict[str, Any], last: dict[str, Any], metrics: dict[str, MetricValue]
+) -> dict[str, Any]:
     """Change across the observed window, using the right units for each quantity."""
     trends: dict[str, Any] = {}
     for column in PROBABILITY_COLUMNS:
         if first.get(column) is not None and last.get(column) is not None:
-            trends[f"{column}_change_pp"] = percentage_point_change(
-                last[column], first[column])
+            trends[f"{column}_change_pp"] = percentage_point_change(last[column], first[column])
     for column in ("revenue", "ebitda", "outstanding"):
         if first.get(column) is not None and last.get(column) is not None:
             trends[f"{column}_change_pct"] = relative_change_pct(last[column], first[column])
@@ -66,7 +72,8 @@ def build_trends(first: dict[str, Any], last: dict[str, Any],
         opening = CALCULATORS["utilisation_pct"](first)
         if opening.value is not None:
             trends["utilisation_change_pp"] = round(
-                float(metrics["utilisation_pct"].value) - float(opening.value), 4)
+                float(metrics["utilisation_pct"].value) - float(opening.value), 4
+            )
     return trends
 
 
@@ -99,15 +106,27 @@ def detect_data_quality(rows: list[dict[str, Any]], plan: QueryPlan) -> list[str
     if dates:
         latest = max(dates)
         stale_months = (plan.as_of_date.year - latest.year) * 12 + (
-            plan.as_of_date.month - latest.month)
+            plan.as_of_date.month - latest.month
+        )
         if stale_months > 3:
             flags.append(f"latest_observation_{stale_months}_months_old")
     return flags
 
 
-def build_factsheet(rows: list[dict[str, Any]], plan: QueryPlan,
-                    case_id: str | None = None) -> CreditFactsheet:
+def build_factsheet(
+    rows: list[dict[str, Any]], plan: QueryPlan, case_id: str | None = None
+) -> CreditFactsheet:
     """Build a factsheet from rows the data service has already validated."""
+    if plan.entity_level == EntityLevel.PORTFOLIO:
+        # The factsheet is an obligor-level artefact throughout - obligor_id, current
+        # position, trends, events - and every consumer of it, from the prompt to the
+        # action gate, reasons about one borrower. A cohort has no single obligor, so this
+        # refuses rather than assembling a sheet with an empty identity. Cohort rows are
+        # served by /v1/query/fetch.
+        raise FactsheetError(
+            "A factsheet is an obligor-level artefact and cannot be built from a "
+            "portfolio cohort; use /v1/query/fetch for cohort results"
+        )
     if not rows:
         raise FactsheetError("Cannot build a factsheet from an empty result set")
 
@@ -119,7 +138,9 @@ def build_factsheet(rows: list[dict[str, Any]], plan: QueryPlan,
     for metric in plan.metrics:
         if metric not in metrics and metric in last:
             metrics[metric] = MetricValue(
-                value=last[metric], source_columns=[metric], formula_id=None,
+                value=last[metric],
+                source_columns=[metric],
+                formula_id=None,
                 missing_data_flag=last[metric] is None,
                 validation_status="warning" if last[metric] is None else "valid",
             )
@@ -133,7 +154,8 @@ def build_factsheet(rows: list[dict[str, Any]], plan: QueryPlan,
     )
 
     return CreditFactsheet(
-        case_id=case_id or f"CASE-{plan.obligor_id}-{plan.as_of_date.isoformat()}",
+        case_id=case_id
+        or f"CASE-{plan.obligor_id}-{plan.as_of_date.isoformat()}-{hashlib.sha256(plan.model_dump_json().encode()).hexdigest()[:12]}",
         obligor_id=plan.obligor_id,
         portfolio=plan.portfolio,
         jurisdiction=plan.jurisdiction,

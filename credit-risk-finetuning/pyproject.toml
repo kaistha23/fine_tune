@@ -7,6 +7,7 @@ dependencies = [
   "duckdb>=1.2",
   "fastapi>=0.115",
   "httpx>=0.28",
+  "jsonschema>=4.23,<5",
   "pydantic>=2.10",
   "pydantic-settings>=2.7",
   "pyyaml>=6.0",
@@ -16,8 +17,15 @@ dependencies = [
 [project.optional-dependencies]
 data = ["polars>=1.20", "pyarrow>=19.0", "openpyxl>=3.1"]
 documents = ["python-docx>=1.1", "pymupdf>=1.25"]
-rag = ["qdrant-client>=1.13", "rank-bm25>=0.2.2"]
+# qdrant-client checks the server version on connect and warns on a major/minor
+# mismatch. The upper bound keeps the client on the same line as the image pinned
+# in compose.yaml; tests/test_compose_architecture.py asserts the two agree.
+rag = ["qdrant-client>=1.19,<1.20", "rank-bm25>=0.2.2"]
 training = ["mlx-lm[train]>=0.30; platform_system == 'Darwin' and platform_machine == 'arm64'"]
+# Qwen3-Embedding runs through the same mlx-lm the trainer uses, so there is no
+# second inference stack to keep in step. Darwin/arm64 only; the offline container
+# falls back to HashingEmbedder, which is a placeholder and not a retrieval claim.
+embedding = ["mlx-lm>=0.30; platform_system == 'Darwin' and platform_machine == 'arm64'"]
 evaluation = ["deepeval>=2.0", "ragas>=0.2"]
 dev = ["pytest>=8.3", "ruff>=0.9"]
 

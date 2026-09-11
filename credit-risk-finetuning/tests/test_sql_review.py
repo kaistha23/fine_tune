@@ -1,7 +1,7 @@
 import unittest
 from datetime import date
 
-from credit_risk.api import build_sql_review_packet, compiler
+from credit_risk.data_service import build_sql_review_packet, compiler
 from credit_risk.schemas import Jurisdiction, Portfolio, QueryPlan
 
 

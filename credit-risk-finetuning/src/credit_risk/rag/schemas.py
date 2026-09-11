@@ -26,6 +26,7 @@ class PolicyChunk(BaseModel):
     effective_to: date | None = None
     supersedes_document_id: str | None = None
     section_id: str = ""
+    chunk_index: int = Field(default=0, ge=0)
     heading_path: list[str] = Field(default_factory=list)
     page_number: int | None = None
     paragraph_number: int | None = None
@@ -40,15 +41,26 @@ class PolicyChunk(BaseModel):
 
     @model_validator(mode="after")
     def validate_effective_window(self) -> PolicyChunk:
-        if (self.effective_from and self.effective_to
-                and self.effective_from > self.effective_to):
+        if self.effective_from and self.effective_to and self.effective_from > self.effective_to:
             raise ValueError("effective_from must not be after effective_to")
         return self
 
     @property
     def evidence_id(self) -> str:
-        """Stable citation handle, e.g. SAMA-DOC-4#7.2."""
-        return f"{self.document_id}#{self.section_id}" if self.section_id else self.document_id
+        """Stable citation handle, e.g. SAMA-DOC-4#7.2, or SAMA-DOC-4#7.2/1.
+
+        A long clause splits into several chunks, and without the ordinal they would all
+        cite the same handle: a reviewer following the citation could not tell which
+        passage the model actually read, and the guardrail could not tell two distinct
+        pieces of evidence apart. The ordinal is appended only when it is non-zero, so
+        the common one-chunk-per-clause citation keeps its plain form.
+        """
+        base = (
+            f"{self.document_id}@{self.document_version}#{self.section_id}"
+            if self.section_id
+            else f"{self.document_id}@{self.document_version}"
+        )
+        return f"{base}/{self.chunk_index}" if self.chunk_index else base
 
 
 class AccessContext(BaseModel):

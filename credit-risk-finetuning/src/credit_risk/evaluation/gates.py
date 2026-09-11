@@ -4,6 +4,7 @@ The file declared eight gates and was read by nothing, so promotion had no evide
 basis. Gates are applied to the overall scorecard *and* to every portfolio and task
 slice: an aggregate that passes while one portfolio has collapsed is not a pass.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -28,7 +29,9 @@ GATE_RULES: dict[str, tuple[str, str]] = {
 
 # Gates where any breach blocks promotion outright, per both plans' zero-tolerance list.
 ZERO_TOLERANCE = (
-    "critical_unsupported_claims", "cross_jurisdiction_retrieval", "numerical_agreement",
+    "critical_unsupported_claims",
+    "cross_jurisdiction_retrieval",
+    "numerical_agreement",
 )
 
 
@@ -43,8 +46,10 @@ class GateResult:
 
     def describe(self) -> str:
         direction = "max" if GATE_RULES[self.name][1] == "max" else "min"
-        return (f"{self.scope}/{self.name}: observed {self.observed} "
-                f"vs {direction} {self.threshold} -> {'pass' if self.passed else 'FAIL'}")
+        return (
+            f"{self.scope}/{self.name}: observed {self.observed} "
+            f"vs {direction} {self.threshold} -> {'pass' if self.passed else 'FAIL'}"
+        )
 
 
 class ReleaseGates:
@@ -61,11 +66,16 @@ class ReleaseGates:
             attribute, comparison = GATE_RULES[name]
             observed = getattr(card, attribute)
             passed = observed <= threshold if comparison == "max" else observed >= threshold
-            results.append(GateResult(
-                name=name, scope=scope, threshold=float(threshold),
-                observed=float(observed), passed=bool(passed),
-                zero_tolerance=name in ZERO_TOLERANCE,
-            ))
+            results.append(
+                GateResult(
+                    name=name,
+                    scope=scope,
+                    threshold=float(threshold),
+                    observed=float(observed),
+                    passed=bool(passed),
+                    zero_tolerance=name in ZERO_TOLERANCE,
+                )
+            )
         return results
 
 
@@ -78,10 +88,14 @@ def evaluate_gates(scores: dict[str, Any], gates: ReleaseGates) -> dict[str, Any
         results.extend(gates.check(card, f"task:{task}"))
 
     failures = [r for r in results if not r.passed]
+    missing = sorted({"retail", "sme", "corporate"} - set(scores["by_portfolio"]))
+    coverage_ok = scores["overall"].n > 0 and not missing
     blocking = [r for r in failures if r.zero_tolerance]
     return {
-        "passed": not failures,
-        "promotable": not failures,
+        "passed": not failures and coverage_ok,
+        "promotable": False,
+        "coverage_missing": missing,
+        "promotion_block": "Requires independent grounding and retrieval calibration plus reviewed benchmark manifest",
         "blocking_failures": [r.describe() for r in blocking],
         "failures": [r.describe() for r in failures],
         "checked": len(results),

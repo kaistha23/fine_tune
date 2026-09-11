@@ -1,3 +1,23 @@
+# fine_tune
+
+This repository holds **two independent projects**. They share no code, no data and no
+dependencies; pick the one you want.
+
+| Directory | Project | Use it for |
+|---|---|---|
+| `.` (this README, below) | **Corporate credit rating** - LoRA fine-tune on MLX | A single model that assigns a rating (AAA-CCC) with a rationale. Self-contained, `pip`/`requirements.txt`, Qwen2.5-7B |
+| [`credit-risk-finetuning/`](credit-risk-finetuning/) | **Credit-risk advisory copilot** - governed pipeline | A guarded system: default-deny SQL, point-in-time correctness, ACL-aware RAG across SAMA/CBUAE, human SQL review, action control, release gates, and a correction loop that feeds fine-tuning. `uv`, Qwen3 series |
+
+The second is the larger of the two: a Docker-plus-native-Mac architecture where the API
+never touches the database, only a restricted data service reads curated data (read-only),
+and every answer is checked against its evidence before release. Start at
+[`credit-risk-finetuning/README.md`](credit-risk-finetuning/README.md) — it carries its own
+quick start, architecture notes and a **What is left** section.
+
+Everything below this line documents the first project only.
+
+---
+
 # Corporate credit rating — LoRA fine-tune on MLX
 
 Fine-tunes an open LLM on Apple Silicon to assign a **corporate credit rating** (AAA through

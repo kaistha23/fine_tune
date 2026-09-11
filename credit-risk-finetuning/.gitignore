@@ -13,3 +13,6 @@ data/training/
 models/
 adapters/
 outputs/
+
+data/audit/
+.reviewer-token

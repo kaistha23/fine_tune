@@ -3,13 +3,14 @@
 factsheet.py was tested but had no caller in src/, so the calculation layer still was not
 reachable from the running system.
 """
+
 import subprocess
 import sys
 import unittest
 from datetime import date
 from pathlib import Path
 
-from fastapi.testclient import TestClient
+from http_helpers import TestClient, execute_reviewed
 
 from credit_risk import api, data_service
 from credit_risk.schemas import Jurisdiction, Portfolio, QueryPlan
@@ -20,17 +21,24 @@ FIXTURE = ROOT / "data" / "curated" / "credit_risk.duckdb"
 
 def ensure_fixture() -> None:
     if not FIXTURE.is_file():
-        subprocess.run([sys.executable, str(ROOT / "scripts" / "make_fixture.py")],
-                       cwd=ROOT, check=True, capture_output=True)
+        subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "make_fixture.py")],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+        )
 
 
 def plan(**overrides) -> QueryPlan:
-    base = dict(
-        portfolio=Portfolio.CORPORATE, jurisdiction=Jurisdiction.SAMA,
-        obligor_id="OBL-0008", date_from=date(2025, 1, 31), date_to=date(2025, 12, 31),
-        as_of_date=date(2026, 1, 15),
-        metrics=["current_ratio", "dscr", "utilisation_pct", "pit_pd", "stage"],
-    )
+    base = {
+        "portfolio": Portfolio.CORPORATE,
+        "jurisdiction": Jurisdiction.SAMA,
+        "obligor_id": "OBL-0008",
+        "date_from": date(2025, 1, 31),
+        "date_to": date(2025, 12, 31),
+        "as_of_date": date(2026, 1, 15),
+        "metrics": ["current_ratio", "dscr", "utilisation_pct", "pit_pd", "stage"],
+    }
     base.update(overrides)
     return QueryPlan(**base)
 
@@ -58,10 +66,7 @@ class FactsheetRouteTests(unittest.TestCase):
             saved = data_service.settings.service_role
             data_service.settings.service_role = "data_service"
             try:
-                response = ds_client.post(
-                    "/internal/v1/query/execute",
-                    headers={"x-service-token": data_service.settings.service_token},
-                    json=request.query_plan.model_dump(mode="json"))
+                response = execute_reviewed(ds_client, request.query_plan.model_dump(mode="json"))
                 return response.json()
             finally:
                 data_service.settings.service_role = saved
@@ -74,8 +79,10 @@ class FactsheetRouteTests(unittest.TestCase):
         api._request_rows = self._original
 
     def test_factsheet_route_returns_a_compact_factsheet(self) -> None:
-        response = self.client.post("/v1/factsheet", json={
-            "user_text": "Analyse the obligor", "query_plan": plan().model_dump(mode="json")})
+        response = self.client.post(
+            "/v1/factsheet",
+            json={"user_text": "Analyse the obligor", "query_plan": plan().model_dump(mode="json")},
+        )
         self.assertEqual(response.status_code, 200, response.text)
         body = response.json()
         sheet = body["factsheet"]
@@ -84,13 +91,16 @@ class FactsheetRouteTests(unittest.TestCase):
         self.assertEqual(sheet["obligor_id"], "OBL-0008")
         self.assertEqual(sheet["observation_months"], 12)
         self.assertIn("current_ratio", sheet["calculated_metrics"])
-        self.assertEqual(sheet["calculated_metrics"]["current_ratio"]["formula_id"],
-                         "ratio.current_ratio.v1")
+        self.assertEqual(
+            sheet["calculated_metrics"]["current_ratio"]["formula_id"], "ratio.current_ratio.v1"
+        )
 
     def test_factsheet_is_smaller_than_the_rows_it_came_from(self) -> None:
         # The whole point: the model sees a factsheet, never 12 months of raw columns.
-        response = self.client.post("/v1/factsheet", json={
-            "user_text": "Analyse the obligor", "query_plan": plan().model_dump(mode="json")})
+        response = self.client.post(
+            "/v1/factsheet",
+            json={"user_text": "Analyse the obligor", "query_plan": plan().model_dump(mode="json")},
+        )
         self.assertNotIn("rows", response.json())
 
 

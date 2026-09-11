@@ -7,6 +7,7 @@ equivalent: by then the content has already reached the process that will build 
 build_predicate returns a backend-neutral description. Each index translates it into its
 own query language, and both translations are tested against the same cases.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -32,6 +33,7 @@ class AccessPredicate:
     approval_status_in: list[str]
     confidentiality_in: list[str]
     effective_on: date
+    role: str = ""
     portfolio: str | None = None
     describe: list[str] = field(default_factory=list)
 
@@ -83,13 +85,15 @@ class RetrievalPolicy:
             confidentiality_in=levels,
             effective_on=context.as_of_date,
             portfolio=context.portfolio,
+            role=context.role,
             describe=[
                 f"collection={collection}",
                 f"jurisdiction={context.jurisdiction.value}",
                 f"approval_status in {statuses}",
                 f"confidentiality in {levels}",
                 f"effective on {context.as_of_date.isoformat()}",
-            ] + ([f"portfolio={context.portfolio}"] if context.portfolio else []),
+            ]
+            + ([f"portfolio={context.portfolio}"] if context.portfolio else []),
         )
 
 
@@ -99,6 +103,8 @@ def chunk_is_visible(chunk: PolicyChunk, predicate: AccessPredicate) -> bool:
     The Qdrant translation is checked against this same function in the tests, so the two
     backends cannot drift apart on a security control.
     """
+    if chunk.allowed_roles and predicate.role not in chunk.allowed_roles:
+        return False
     if chunk.jurisdiction.value != predicate.jurisdiction:
         return False
     if chunk.approval_status not in predicate.approval_status_in:

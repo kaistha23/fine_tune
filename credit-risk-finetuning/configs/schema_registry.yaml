@@ -1,4 +1,4 @@
-version: "1.1.0"
+version: "1.2.0"
 default_deny: true
 
 # Columns that carry point-in-time semantics. Every compiled query is filtered on
@@ -117,7 +117,25 @@ query_controls:
   prohibited_sql_keywords: [insert, update, delete, drop, alter, create, attach, copy, export, import, pragma, merge, truncate, grant, revoke, call, install, load, set, reset]
   # Enforced against the SQL the compiler produces. Any operator outside this set is a
   # bug in the compiler, not a caller-supplied value.
-  allowed_operators: ["=", "<=", "BETWEEN", "AND"]
+  # ">=" is used only by the cohort HAVING floor, which the compiler emits itself.
+  allowed_operators: ["=", "<=", ">=", "BETWEEN", "AND"]
+
+  # Portfolio-level cohort analysis (finding M4). Default-deny throughout: a dimension has
+  # to be listed to be grouped on, and an aggregation has to be listed to be applied.
+  cohort:
+    # No cohort smaller than this is returned. An aggregate over a handful of obligors is
+    # an individual disclosure wearing an aggregate's clothes, and the whole point of the
+    # data-service boundary is that the API never receives obligor-level values.
+    minimum_cohort_size: 25
+    maximum_group_by: 2
+    # obligor_id and facility_id are absent by construction: grouping on them would turn a
+    # cohort query straight back into a per-obligor extract.
+    allowed_group_by: [observation_date, stage, internal_rating]
+    # MIN and MAX are deliberately absent. Both return some individual's actual value, so
+    # they disclose one obligor however large the cohort is.
+    allowed_aggregations: [count, sum, avg]
+    # A cohort mean over a string, date or boolean column is a category error, not a query.
+    aggregatable_types: [number, integer, probability]
   # No allowed_joins block: the compiler emits single-table queries only. Declaring a join
   # allowlist that nothing reads would be the same dead-config problem as before. Joins
   # arrive with obligor/facility roll-up, and the allowlist arrives with them.

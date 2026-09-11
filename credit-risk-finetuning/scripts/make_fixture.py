@@ -150,7 +150,11 @@ def build(seed: int, n_obligors: int):
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path, default=Path("data/curated/credit_risk.duckdb"))
-    parser.add_argument("--obligors", type=int, default=60)
+    # 300 obligors is not arbitrary: the cohort floor in the schema registry suppresses
+    # any group smaller than 25, and the portfolio mix puts the smallest cell
+    # (corporate x one jurisdiction) at 10% of the population. Below ~250 obligors every
+    # cohort query correctly returns nothing, which makes the feature untestable.
+    parser.add_argument("--obligors", type=int, default=300)
     parser.add_argument("--seed", type=int, default=17)
     args = parser.parse_args()
 

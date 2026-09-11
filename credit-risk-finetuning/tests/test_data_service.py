@@ -4,13 +4,14 @@ The handover repository executed the approved query and returned rows verbatim: 
 statement timeout, no memory bound, and no check that the rows matched the grain and
 filters the plan was approved under. There was also no test for this module at all.
 """
+
 import subprocess
 import sys
 import unittest
 from datetime import date
 from pathlib import Path
 
-from fastapi.testclient import TestClient
+from http_helpers import TestClient, execute_reviewed
 
 from credit_risk import data_service
 from credit_risk.data_service import ResultValidationError, app, validate_result
@@ -27,16 +28,22 @@ def ensure_fixture() -> None:
     if not FIXTURE.is_file():
         subprocess.run(
             [sys.executable, str(ROOT / "scripts" / "make_fixture.py")],
-            cwd=ROOT, check=True, capture_output=True,
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
         )
 
 
 def plan(**overrides) -> QueryPlan:
-    base = dict(
-        portfolio=Portfolio.CORPORATE, jurisdiction=Jurisdiction.SAMA,
-        obligor_id="OBL-0008", date_from=date(2025, 1, 31), date_to=date(2025, 12, 31),
-        as_of_date=date(2026, 1, 15), metrics=["current_ratio", "dscr", "pit_pd", "stage"],
-    )
+    base = {
+        "portfolio": Portfolio.CORPORATE,
+        "jurisdiction": Jurisdiction.SAMA,
+        "obligor_id": "OBL-0008",
+        "date_from": date(2025, 1, 31),
+        "date_to": date(2025, 12, 31),
+        "as_of_date": date(2026, 1, 15),
+        "metrics": ["current_ratio", "dscr", "pit_pd", "stage"],
+    }
     base.update(overrides)
     return QueryPlan(**base)
 
@@ -44,8 +51,7 @@ def plan(**overrides) -> QueryPlan:
 class AuthTests(unittest.TestCase):
     def test_execute_requires_the_service_token(self) -> None:
         client = TestClient(app)
-        response = client.post("/internal/v1/query/execute",
-                               json=plan().model_dump(mode="json"))
+        response = client.post("/internal/v1/query/execute", json=plan().model_dump(mode="json"))
         self.assertEqual(response.status_code, 401)
 
     def test_wrong_token_is_rejected(self) -> None:
@@ -53,7 +59,8 @@ class AuthTests(unittest.TestCase):
         response = client.post(
             "/internal/v1/query/execute",
             headers={"x-service-token": "not-the-token"},
-            json=plan().model_dump(mode="json"))
+            json=plan().model_dump(mode="json"),
+        )
         self.assertEqual(response.status_code, 401)
 
 
@@ -73,8 +80,7 @@ class ExecutionTests(unittest.TestCase):
         data_service.settings.service_role = cls._role
 
     def post(self, query_plan: QueryPlan):
-        return self.client.post("/internal/v1/query/execute", headers=self.headers,
-                                json=query_plan.model_dump(mode="json"))
+        return execute_reviewed(self.client, query_plan.model_dump(mode="json"))
 
     def test_approved_query_returns_validated_rows(self) -> None:
         response = self.post(plan())
@@ -118,10 +124,14 @@ class ResultValidationTests(unittest.TestCase):
 
     def good_row(self, **overrides) -> dict:
         row = {
-            "obligor_id": "OBL-0008", "observation_date": "2025-01-31",
-            "data_cutoff_date": "2025-02-05", "model_run_date": "2025-02-10",
-            "portfolio": "corporate", "jurisdiction": "SAMA",
+            "obligor_id": "OBL-0008",
+            "observation_date": "2025-01-31",
+            "data_cutoff_date": "2025-02-05",
+            "model_run_date": "2025-02-10",
+            "portfolio": "corporate",
+            "jurisdiction": "SAMA",
         }
+        row = {**dict.fromkeys(self.compiled.selected_columns), **row}
         row.update(overrides)
         return row
 
@@ -137,14 +147,16 @@ class ResultValidationTests(unittest.TestCase):
 
     def test_row_from_another_portfolio_is_rejected(self) -> None:
         with self.assertRaises(ResultValidationError) as ctx:
-            validate_result([self.good_row(portfolio="retail")], self.compiled,
-                            plan(), self.controls)
+            validate_result(
+                [self.good_row(portfolio="retail")], self.compiled, plan(), self.controls
+            )
         self.assertIn("portfolio_mismatch", str(ctx.exception))
 
     def test_row_from_another_jurisdiction_is_rejected(self) -> None:
         with self.assertRaises(ResultValidationError) as ctx:
-            validate_result([self.good_row(jurisdiction="CBUAE")], self.compiled,
-                            plan(), self.controls)
+            validate_result(
+                [self.good_row(jurisdiction="CBUAE")], self.compiled, plan(), self.controls
+            )
         self.assertIn("jurisdiction_mismatch", str(ctx.exception))
 
     def test_row_published_after_the_as_of_date_is_rejected(self) -> None:
@@ -157,8 +169,9 @@ class ResultValidationTests(unittest.TestCase):
 
     def test_observation_outside_the_requested_window_is_rejected(self) -> None:
         with self.assertRaises(ResultValidationError) as ctx:
-            validate_result([self.good_row(observation_date="2020-01-31")], self.compiled,
-                            plan(), self.controls)
+            validate_result(
+                [self.good_row(observation_date="2020-01-31")], self.compiled, plan(), self.controls
+            )
         self.assertIn("observation_date_out_of_range", str(ctx.exception))
 
 
