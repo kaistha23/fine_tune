@@ -14,6 +14,7 @@ Both backends record the embedder signature that filled them and refuse a mismat
 similarity across two different embedding models is not a weak signal, it is a meaningless
 one, and it fails silently: the search still returns a confident top-k of wrong clauses.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -44,16 +45,15 @@ class EmbedderMismatch(RuntimeError):
 
 
 class PolicyIndex(Protocol):
-    def upsert(self, chunks: list[PolicyChunk]) -> None:
-        ...
+    def upsert(self, chunks: list[PolicyChunk]) -> None: ...
 
-    def search_dense(self, query: str, predicate: AccessPredicate,
-                     limit: int) -> list[tuple[PolicyChunk, float]]:
-        ...
+    def search_dense(
+        self, query: str, predicate: AccessPredicate, limit: int
+    ) -> list[tuple[PolicyChunk, float]]: ...
 
-    def search_lexical(self, query: str, predicate: AccessPredicate,
-                       limit: int) -> list[tuple[PolicyChunk, float]]:
-        ...
+    def search_lexical(
+        self, query: str, predicate: AccessPredicate, limit: int
+    ) -> list[tuple[PolicyChunk, float]]: ...
 
 
 class InMemoryPolicyIndex:
@@ -78,8 +78,12 @@ class InMemoryPolicyIndex:
     def _collection_name(self, chunk: PolicyChunk, namespaces: dict[str, str]) -> str:
         return namespaces[chunk.jurisdiction.value]
 
-    def upsert(self, chunks: list[PolicyChunk], collection: str | None = None,
-               namespaces: dict[str, str] | None = None) -> None:
+    def upsert(
+        self,
+        chunks: list[PolicyChunk],
+        collection: str | None = None,
+        namespaces: dict[str, str] | None = None,
+    ) -> None:
         for chunk in chunks:
             name = collection or (namespaces or {}).get(chunk.jurisdiction.value)
             if name is None:
@@ -95,8 +99,9 @@ class InMemoryPolicyIndex:
         chunks = self._collections.get(predicate.collection, [])
         return [(i, c) for i, c in enumerate(chunks) if chunk_is_visible(c, predicate)]
 
-    def search_dense(self, query: str, predicate: AccessPredicate,
-                     limit: int) -> list[tuple[PolicyChunk, float]]:
+    def search_dense(
+        self, query: str, predicate: AccessPredicate, limit: int
+    ) -> list[tuple[PolicyChunk, float]]:
         self._check_signature(predicate.collection, writing=False)
         visible = self._visible(predicate)
         if not visible:
@@ -107,12 +112,14 @@ class InMemoryPolicyIndex:
         scored.sort(key=lambda pair: pair[1], reverse=True)
         return scored[:limit]
 
-    def search_lexical(self, query: str, predicate: AccessPredicate,
-                       limit: int) -> list[tuple[PolicyChunk, float]]:
+    def search_lexical(
+        self, query: str, predicate: AccessPredicate, limit: int
+    ) -> list[tuple[PolicyChunk, float]]:
         visible = self._visible(predicate)
         if not visible:
             return []
         from credit_risk.rag.lexical import tokenize
+
         bm25 = BM25([tokenize(chunk.text) for _, chunk in visible])
         ranked = bm25.rank(query)
         return [(visible[i][1], score) for i, score in ranked[:limit]]
@@ -144,30 +151,46 @@ def build_qdrant_filter(predicate: AccessPredicate) -> Any:
 
     stamp = predicate.effective_on.isoformat()
     conditions: list[Any] = [
-        models.FieldCondition(key="jurisdiction",
-                              match=models.MatchValue(value=predicate.jurisdiction)),
-        models.FieldCondition(key="approval_status",
-                              match=models.MatchAny(any=predicate.approval_status_in)),
-        models.FieldCondition(key="confidentiality_level",
-                              match=models.MatchAny(any=predicate.confidentiality_in)),
+        models.FieldCondition(
+            key="jurisdiction", match=models.MatchValue(value=predicate.jurisdiction)
+        ),
+        models.FieldCondition(
+            key="approval_status", match=models.MatchAny(any=predicate.approval_status_in)
+        ),
+        models.FieldCondition(
+            key="confidentiality_level", match=models.MatchAny(any=predicate.confidentiality_in)
+        ),
     ]
+    conditions.append(
+        models.Filter(
+            should=[
+                models.FieldCondition(
+                    key="allowed_roles", match=models.MatchValue(value=predicate.role)
+                ),
+                models.IsEmptyCondition(is_empty=models.PayloadField(key="allowed_roles")),
+            ]
+        )
+    )
     if predicate.portfolio:
         # A chunk with no portfolio list applies to every portfolio - which is most
         # regulatory guidance - so it must stay visible. chunk_is_visible encodes that as
         # `predicate.portfolio and chunk.portfolio and ...`; a bare MatchAny here does not,
         # and hid every unscoped circular from every portfolio-scoped query.
-        conditions.append(models.Filter(should=[
-            models.FieldCondition(key="portfolio",
-                                  match=models.MatchAny(any=[predicate.portfolio])),
-            models.IsEmptyCondition(is_empty=models.PayloadField(key="portfolio")),
-        ]))
+        conditions.append(
+            models.Filter(
+                should=[
+                    models.FieldCondition(
+                        key="portfolio", match=models.MatchAny(any=[predicate.portfolio])
+                    ),
+                    models.IsEmptyCondition(is_empty=models.PayloadField(key="portfolio")),
+                ]
+            )
+        )
     return models.Filter(
         must=conditions,
         must_not=[
-            models.FieldCondition(key="effective_from",
-                                  range=models.DatetimeRange(gt=stamp)),
-            models.FieldCondition(key="effective_to",
-                                  range=models.DatetimeRange(lt=stamp)),
+            models.FieldCondition(key="effective_from", range=models.DatetimeRange(gt=stamp)),
+            models.FieldCondition(key="effective_to", range=models.DatetimeRange(lt=stamp)),
         ],
     )
 
@@ -203,8 +226,7 @@ class QdrantPolicyIndex:
     nor a server, and the access controls must stay testable there.
     """
 
-    def __init__(self, url: str, embedder: Embedder | None = None,
-                 timeout: float = 10.0):
+    def __init__(self, url: str, embedder: Embedder | None = None, timeout: float = 10.0):
         from qdrant_client import QdrantClient
 
         self.embedder = embedder or HashingEmbedder()
@@ -247,21 +269,30 @@ class QdrantPolicyIndex:
         self.client.create_collection(
             collection_name=collection,
             vectors_config=models.VectorParams(
-                size=self.embedder.dimensions, distance=models.Distance.COSINE),
+                size=self.embedder.dimensions, distance=models.Distance.COSINE
+            ),
             metadata={_SIGNATURE_KEY: self.embedder.signature},
         )
         # Indexing the filtered fields is what keeps the pre-search filter cheap rather
         # than a full scan on every query.
         for field, schema in (
-            ("jurisdiction", "keyword"), ("approval_status", "keyword"),
-            ("confidentiality_level", "keyword"), ("portfolio", "keyword"),
-            ("effective_from", "datetime"), ("effective_to", "datetime"),
+            ("jurisdiction", "keyword"),
+            ("approval_status", "keyword"),
+            ("confidentiality_level", "keyword"),
+            ("portfolio", "keyword"),
+            ("effective_from", "datetime"),
+            ("effective_to", "datetime"),
         ):
             self.client.create_payload_index(
-                collection_name=collection, field_name=field, field_schema=schema)
+                collection_name=collection, field_name=field, field_schema=schema
+            )
 
-    def upsert(self, chunks: list[PolicyChunk], collection: str | None = None,
-               namespaces: dict[str, str] | None = None) -> None:
+    def upsert(
+        self,
+        chunks: list[PolicyChunk],
+        collection: str | None = None,
+        namespaces: dict[str, str] | None = None,
+    ) -> None:
         from qdrant_client import models
 
         grouped: dict[str, list[PolicyChunk]] = {}
@@ -288,8 +319,9 @@ class QdrantPolicyIndex:
                 ],
             )
 
-    def search_dense(self, query: str, predicate: AccessPredicate,
-                     limit: int) -> list[tuple[PolicyChunk, float]]:
+    def search_dense(
+        self, query: str, predicate: AccessPredicate, limit: int
+    ) -> list[tuple[PolicyChunk, float]]:
         if not self.client.collection_exists(predicate.collection):
             return []
         self._check_signature(predicate.collection)
@@ -302,8 +334,9 @@ class QdrantPolicyIndex:
         ).points
         return [(from_payload(point.payload), float(point.score)) for point in found]
 
-    def search_lexical(self, query: str, predicate: AccessPredicate,
-                       limit: int) -> list[tuple[PolicyChunk, float]]:
+    def search_lexical(
+        self, query: str, predicate: AccessPredicate, limit: int
+    ) -> list[tuple[PolicyChunk, float]]:
         """Candidates come back under the same server-side filter, then BM25 ranks them.
 
         Qdrant does the access filtering; the lexical scoring is ours, so both backends
@@ -313,13 +346,19 @@ class QdrantPolicyIndex:
 
         if not self.client.collection_exists(predicate.collection):
             return []
-        points, _ = self.client.scroll(
-            collection_name=predicate.collection,
-            scroll_filter=build_qdrant_filter(predicate),
-            limit=max(limit * 8, 128),
-            with_payload=True,
-        )
-        candidates = [from_payload(point.payload) for point in points]
+        candidates = []
+        offset = None
+        while True:
+            points, offset = self.client.scroll(
+                collection_name=predicate.collection,
+                scroll_filter=build_qdrant_filter(predicate),
+                limit=256,
+                offset=offset,
+                with_payload=True,
+            )
+            candidates.extend(from_payload(point.payload) for point in points)
+            if offset is None:
+                break
         if not candidates:
             return []
         bm25 = BM25([tokenize(chunk.text) for chunk in candidates])

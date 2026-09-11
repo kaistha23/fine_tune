@@ -4,7 +4,21 @@ from datetime import UTC, date, datetime
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+def compact_json_schema(value: Any) -> Any:
+    """Remove prompt-irrelevant annotations while preserving validation semantics."""
+
+    if isinstance(value, dict):
+        return {
+            key: compact_json_schema(item)
+            for key, item in value.items()
+            if key not in {"title", "description", "default"}
+        }
+    if isinstance(value, list):
+        return [compact_json_schema(item) for item in value]
+    return value
 
 
 class Portfolio(StrEnum):
@@ -33,6 +47,7 @@ class AnswerStatus(StrEnum):
 
 
 class QueryPlan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     portfolio: Portfolio
     jurisdiction: Jurisdiction
     entity_level: EntityLevel = EntityLevel.OBLIGOR
@@ -64,8 +79,7 @@ class QueryPlan(BaseModel):
             # A cohort query that names an obligor is an individual extract with a GROUP BY
             # bolted on. Refusing it here means the cohort-size floor cannot be sidestepped.
             if self.obligor_id or self.facility_id:
-                raise ValueError(
-                    "portfolio-level queries must not name an obligor or facility")
+                raise ValueError("portfolio-level queries must not name an obligor or facility")
         else:
             if not self.obligor_id:
                 raise ValueError("obligor_id is required for obligor and facility queries")
@@ -122,6 +136,39 @@ class InferenceClaim(BaseModel):
     confidence: float = Field(ge=0, le=1)
 
 
+class CreditConclusion(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    conclusion_type: str = Field(min_length=1, max_length=100)
+    value: bool | int | float | str
+    severity: Literal["low", "medium", "high", "critical"]
+    evidence_ids: list[str] = Field(default_factory=list)
+
+
+class RiskDriverDetail(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    driver: str = Field(min_length=1, max_length=100)
+    observed_value: bool | int | float | str | None = None
+    prior_value: bool | int | float | str | None = None
+    unit: str | None = Field(default=None, max_length=32)
+    currency: str | None = Field(default=None, max_length=3)
+    direction: Literal["improving", "stable", "deteriorating", "unknown"]
+    severity: Literal["low", "medium", "high", "critical"]
+    as_of_date: date
+    evidence_ids: list[str] = Field(default_factory=list)
+
+
+class MissingInformationDetail(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    field: str = Field(min_length=1, max_length=100)
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class RecommendationDetail(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: str = Field(min_length=1, max_length=200)
+    rationale_evidence_ids: list[str] = Field(default_factory=list)
+
+
 class CreditResponse(BaseModel):
     answer_status: AnswerStatus
     executive_summary: str
@@ -132,9 +179,14 @@ class CreditResponse(BaseModel):
     missing_information: list[str] = Field(default_factory=list)
     recommendation: str = ""
     human_approval_required: bool = True
+    conclusions: list[CreditConclusion] = Field(default_factory=list)
+    risk_driver_details: list[RiskDriverDetail] = Field(default_factory=list)
+    missing_information_details: list[MissingInformationDetail] = Field(default_factory=list)
+    recommendation_detail: RecommendationDetail | None = None
 
 
 class InteractionRecord(BaseModel):
+    reviewer_id: str = ""
     """What the model was shown and what it answered, kept so a correction can be trained on.
 
     Without this the feedback loop has no input: FeedbackRecord carried only an
@@ -166,6 +218,13 @@ class InteractionRecord(BaseModel):
 
 
 class FeedbackRecord(BaseModel):
+    attempted_query_plan: dict[str, Any] | None = None
+    reviewed_query_plan: dict[str, Any] | None = None
+    sql_review_packet: dict[str, Any] | None = None
+    reviewer_id: str = ""
+    review_status: Literal["pending", "approved", "rejected"] = "pending"
+    quality_score: int = Field(default=0, ge=0, le=5)
+    data_classification: Literal["synthetic", "masked"] = "synthetic"
     interaction_id: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     model_id: str
@@ -184,13 +243,27 @@ class FeedbackRecord(BaseModel):
     input_factsheet: dict[str, Any] | None = None
     input_evidence: list[dict[str, Any]] = Field(default_factory=list)
     original_output: str
-    error_labels: list[Literal[
-        "correct", "correct_style_change", "wrong_retrieval", "unsupported_claim",
-        "numeric_error", "wrong_credit_interpretation", "wrong_jurisdiction",
-        "missing_information_not_identified", "guardrail_failure", "should_have_abstained",
-        "wrong_table", "wrong_column", "wrong_join", "wrong_grain", "wrong_filter",
-        "wrong_calculation", "sql_review_rejected"
-    ]]
+    error_labels: list[
+        Literal[
+            "correct",
+            "correct_style_change",
+            "wrong_retrieval",
+            "unsupported_claim",
+            "numeric_error",
+            "wrong_credit_interpretation",
+            "wrong_jurisdiction",
+            "missing_information_not_identified",
+            "guardrail_failure",
+            "should_have_abstained",
+            "wrong_table",
+            "wrong_column",
+            "wrong_join",
+            "wrong_grain",
+            "wrong_filter",
+            "wrong_calculation",
+            "sql_review_rejected",
+        ]
+    ]
     corrected_output: str | None = None
     root_cause: Literal[
         "data", "schema", "query", "calculation", "retrieval", "guardrail", "model_behaviour"

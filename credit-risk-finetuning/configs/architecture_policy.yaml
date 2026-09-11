@@ -2,13 +2,12 @@ version: "1.2.0"
 default_deny: true
 
 # Capabilities describe what each service's code actually does, not an aspiration.
-# The API does build a parameterised SQL template in memory - that is how the reviewer is
-# shown it - but it can never execute one or reach the database file.
+# The data service compiles SQL. The API validates plans and displays the returned
+# review packet; it cannot compile SQL, execute it or reach the database file.
 roles:
   api_gateway:
     allowed:
       - validate_query_plan
-      - compile_parameterised_sql_for_review
       - view_parameterised_sql
       - request_data_service
       - record_sql_review
@@ -19,6 +18,7 @@ roles:
       - record_interaction
       - record_analysis_feedback
     denied:
+      - compile_parameterised_sql_for_review
       - execute_sql
       - execute_read_only_sql
       - edit_and_execute_sql

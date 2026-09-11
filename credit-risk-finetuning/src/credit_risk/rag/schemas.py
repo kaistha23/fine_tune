@@ -41,8 +41,7 @@ class PolicyChunk(BaseModel):
 
     @model_validator(mode="after")
     def validate_effective_window(self) -> PolicyChunk:
-        if (self.effective_from and self.effective_to
-                and self.effective_from > self.effective_to):
+        if self.effective_from and self.effective_to and self.effective_from > self.effective_to:
             raise ValueError("effective_from must not be after effective_to")
         return self
 
@@ -56,7 +55,11 @@ class PolicyChunk(BaseModel):
         pieces of evidence apart. The ordinal is appended only when it is non-zero, so
         the common one-chunk-per-clause citation keeps its plain form.
         """
-        base = f"{self.document_id}#{self.section_id}" if self.section_id else self.document_id
+        base = (
+            f"{self.document_id}@{self.document_version}#{self.section_id}"
+            if self.section_id
+            else f"{self.document_id}@{self.document_version}"
+        )
         return f"{base}/{self.chunk_index}" if self.chunk_index else base
 
 

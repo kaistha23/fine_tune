@@ -4,6 +4,7 @@ The compiler only ever emitted `obligor_id = ?`, so portfolio questions - stage 
 average PD by rating - were unreachable. Aggregation opens a disclosure path the
 obligor-scoped design never had, so most of these tests are about what must be refused.
 """
+
 import unittest
 from datetime import date
 from pathlib import Path
@@ -24,12 +25,16 @@ def controls() -> dict:
 
 
 def cohort_plan(**overrides) -> QueryPlan:
-    base = dict(
-        portfolio=Portfolio.SME, jurisdiction=Jurisdiction.SAMA,
-        entity_level=EntityLevel.PORTFOLIO, group_by=["observation_date"],
-        date_from=date(2025, 1, 31), date_to=date(2025, 12, 31),
-        as_of_date=date(2026, 1, 15), metrics=["pit_pd"],
-    )
+    base = {
+        "portfolio": Portfolio.SME,
+        "jurisdiction": Jurisdiction.SAMA,
+        "entity_level": EntityLevel.PORTFOLIO,
+        "group_by": ["observation_date"],
+        "date_from": date(2025, 1, 31),
+        "date_to": date(2025, 12, 31),
+        "as_of_date": date(2026, 1, 15),
+        "metrics": ["pit_pd"],
+    }
     base.update(overrides)
     return QueryPlan(**base)
 
@@ -47,16 +52,27 @@ class CohortPlanValidationTests(unittest.TestCase):
 
     def test_an_obligor_plan_still_requires_an_obligor_id(self) -> None:
         with self.assertRaises(ValueError):
-            QueryPlan(portfolio=Portfolio.SME, jurisdiction=Jurisdiction.SAMA,
-                      date_from=date(2025, 1, 31), date_to=date(2025, 12, 31),
-                      as_of_date=date(2026, 1, 15), metrics=["pit_pd"])
+            QueryPlan(
+                portfolio=Portfolio.SME,
+                jurisdiction=Jurisdiction.SAMA,
+                date_from=date(2025, 1, 31),
+                date_to=date(2025, 12, 31),
+                as_of_date=date(2026, 1, 15),
+                metrics=["pit_pd"],
+            )
 
     def test_group_by_is_rejected_on_an_obligor_plan(self) -> None:
         with self.assertRaises(ValueError):
-            QueryPlan(portfolio=Portfolio.SME, jurisdiction=Jurisdiction.SAMA,
-                      obligor_id="OBL-0008", group_by=["stage"],
-                      date_from=date(2025, 1, 31), date_to=date(2025, 12, 31),
-                      as_of_date=date(2026, 1, 15), metrics=["pit_pd"])
+            QueryPlan(
+                portfolio=Portfolio.SME,
+                jurisdiction=Jurisdiction.SAMA,
+                obligor_id="OBL-0008",
+                group_by=["stage"],
+                date_from=date(2025, 1, 31),
+                date_to=date(2025, 12, 31),
+                as_of_date=date(2026, 1, 15),
+                metrics=["pit_pd"],
+            )
 
 
 class CohortCompilationTests(unittest.TestCase):
@@ -112,11 +128,17 @@ class CohortCompilationTests(unittest.TestCase):
         self.assertEqual(compiled.grain, "portfolio_jurisdiction_observation_date")
 
     def test_an_obligor_query_is_unchanged(self) -> None:
-        compiled = compiler().compile(QueryPlan(
-            portfolio=Portfolio.SME, jurisdiction=Jurisdiction.SAMA,
-            obligor_id="OBL-0008", date_from=date(2025, 1, 31),
-            date_to=date(2025, 12, 31), as_of_date=date(2026, 1, 15),
-            metrics=["pit_pd"]))
+        compiled = compiler().compile(
+            QueryPlan(
+                portfolio=Portfolio.SME,
+                jurisdiction=Jurisdiction.SAMA,
+                obligor_id="OBL-0008",
+                date_from=date(2025, 1, 31),
+                date_to=date(2025, 12, 31),
+                as_of_date=date(2026, 1, 15),
+                metrics=["pit_pd"],
+            )
+        )
         self.assertIn('"obligor_id" = ?', compiled.sql)
         self.assertNotIn("GROUP BY", compiled.sql)
         self.assertIsNone(compiled.minimum_cohort_size)
@@ -134,7 +156,8 @@ class CohortDefaultDenyTests(unittest.TestCase):
     def test_too_many_dimensions_are_refused(self) -> None:
         with self.assertRaises(QueryGuardError):
             compiler().compile(
-                cohort_plan(group_by=["observation_date", "stage", "internal_rating"]))
+                cohort_plan(group_by=["observation_date", "stage", "internal_rating"])
+            )
 
     def test_a_governed_ratio_cannot_be_aggregated(self) -> None:
         # AVG(numerator)/AVG(denominator) is not AVG(ratio). For DSCR the two differ by
@@ -158,15 +181,20 @@ class CohortDefaultDenyTests(unittest.TestCase):
 
     def test_counting_a_categorical_column_is_allowed(self) -> None:
         compiled = compiler().compile(
-            cohort_plan(metrics=["internal_rating"], cohort_aggregation="count"))
+            cohort_plan(metrics=["internal_rating"], cohort_aggregation="count")
+        )
         self.assertIn('COUNT("internal_rating")', compiled.sql)
 
 
 class CohortResultValidationTests(unittest.TestCase):
     def _rows(self, **overrides):
-        row = dict(portfolio="sme", jurisdiction="SAMA", observation_date="2025-06-30",
-                   cohort_size=40, pit_pd=0.04, data_cutoff_date="2025-12-31",
-                   model_run_date="2025-12-31")
+        row = {
+            "portfolio": "sme",
+            "jurisdiction": "SAMA",
+            "observation_date": "2025-06-30",
+            "cohort_size": 40,
+            "pit_pd": 0.04,
+        }
         row.update(overrides)
         return [row]
 
@@ -205,8 +233,7 @@ class CohortResultValidationTests(unittest.TestCase):
         plan = cohort_plan()
         compiled = compiler().compile(plan)
         with self.assertRaises(ResultValidationError) as caught:
-            validate_result(self._rows(model_run_date="2026-06-30"), compiled, plan,
-                            controls())
+            validate_result(self._rows(model_run_date="2026-06-30"), compiled, plan, controls())
         self.assertIn("point_in_time_breach", str(caught.exception))
 
     def test_a_jurisdiction_mismatch_is_still_caught(self) -> None:
@@ -222,35 +249,85 @@ class CohortFactsheetTests(unittest.TestCase):
         # about one borrower. Without this guard a cohort plan reached CreditFactsheet
         # with obligor_id=None and surfaced a raw pydantic error to the caller.
         from credit_risk.factsheet import FactsheetError, build_factsheet
-        rows = [dict(portfolio="sme", jurisdiction="SAMA",
-                     observation_date="2025-06-30", cohort_size=30, pit_pd=0.04)]
+
+        rows = [
+            {
+                "portfolio": "sme",
+                "jurisdiction": "SAMA",
+                "observation_date": "2025-06-30",
+                "cohort_size": 30,
+                "pit_pd": 0.04,
+            }
+        ]
         with self.assertRaises(FactsheetError) as caught:
             build_factsheet(rows, cohort_plan())
         self.assertIn("/v1/query/fetch", str(caught.exception))
 
     def test_an_obligor_factsheet_still_builds(self) -> None:
         from credit_risk.factsheet import build_factsheet
+
         plan = QueryPlan(
-            portfolio=Portfolio.SME, jurisdiction=Jurisdiction.SAMA,
-            obligor_id="OBL-0008", date_from=date(2025, 1, 31),
-            date_to=date(2025, 12, 31), as_of_date=date(2026, 1, 15), metrics=["pit_pd"])
-        rows = [dict(obligor_id="OBL-0008", portfolio="sme", jurisdiction="SAMA",
-                     observation_date="2025-06-30", pit_pd=0.04)]
+            portfolio=Portfolio.SME,
+            jurisdiction=Jurisdiction.SAMA,
+            obligor_id="OBL-0008",
+            date_from=date(2025, 1, 31),
+            date_to=date(2025, 12, 31),
+            as_of_date=date(2026, 1, 15),
+            metrics=["pit_pd"],
+        )
+        rows = [
+            {
+                "obligor_id": "OBL-0008",
+                "portfolio": "sme",
+                "jurisdiction": "SAMA",
+                "observation_date": "2025-06-30",
+                "pit_pd": 0.04,
+            }
+        ]
         self.assertEqual(build_factsheet(rows, plan).obligor_id, "OBL-0008")
 
 
 class CohortEndpointTests(unittest.TestCase):
     def setUp(self) -> None:
-        from fastapi.testclient import TestClient
+        from http_helpers import TestClient
 
         from credit_risk.api import app
+
         self.client = TestClient(app)
+        from unittest.mock import patch
+
+        from test_api_factsheet import ensure_fixture
+
+        from credit_risk import api, data_service
+
+        ensure_fixture()
+
+        def data_call(operation, payload):
+            with patch.object(data_service.settings, "service_role", "data_service"):
+                result = TestClient(data_service.app).post(
+                    "/internal/v1/query/" + operation,
+                    headers={"x-service-token": data_service.settings.service_token},
+                    json={**payload, "reviewer_id": "test-reviewer"},
+                )
+            from fastapi import HTTPException
+
+            if result.status_code >= 400:
+                raise HTTPException(result.status_code, result.json()["detail"])
+            return result.json()
+
+        patcher = patch.object(api, "data_call", data_call)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.body = {
             "user_text": "Average PD for the SME book through 2025",
             "query_plan": {
-                "portfolio": "sme", "jurisdiction": "SAMA", "entity_level": "portfolio",
-                "group_by": ["observation_date"], "date_from": "2025-01-01",
-                "date_to": "2025-12-31", "as_of_date": "2026-01-15",
+                "portfolio": "sme",
+                "jurisdiction": "SAMA",
+                "entity_level": "portfolio",
+                "group_by": ["observation_date"],
+                "date_from": "2025-01-01",
+                "date_to": "2025-12-31",
+                "as_of_date": "2026-01-15",
                 "metrics": ["pit_pd"],
             },
         }
@@ -259,15 +336,13 @@ class CohortEndpointTests(unittest.TestCase):
         response = self.client.post("/v1/query/validate", json=self.body)
         self.assertEqual(response.status_code, 200)
         review = response.json()["sql_review"]
-        self.assertEqual(review["group_by"],
-                         ["portfolio", "jurisdiction", "observation_date"])
+        self.assertEqual(review["group_by"], ["portfolio", "jurisdiction", "observation_date"])
         self.assertEqual(review["minimum_cohort_size"], 25)
         self.assertEqual(review["aggregations"], {"pit_pd": "avg(pit_pd)"})
 
     def test_the_reviewer_sees_the_suppression_floor(self) -> None:
         # "grain" alone tells a reviewer nothing about whether an aggregate is releasable.
-        review = self.client.post(
-            "/v1/query/validate", json=self.body).json()["sql_review"]
+        review = self.client.post("/v1/query/validate", json=self.body).json()["sql_review"]
         self.assertIn("cohort_size >= 25 (small cells suppressed)", review["filters"])
 
     def test_factsheet_and_analyse_refuse_before_fetching_rows(self) -> None:
@@ -294,9 +369,15 @@ class TruncationTests(unittest.TestCase):
         compiled = compiler().compile(plan)
         limit = int(controls()["maximum_result_rows"])
         rows = [
-            dict(portfolio="sme", jurisdiction="SAMA",
-                 observation_date=f"2025-06-{(i % 28) + 1:02d}", cohort_size=40,
-                 pit_pd=0.04, data_cutoff_date="2025-01-01", model_run_date="2025-01-01")
+            {
+                "portfolio": "sme",
+                "jurisdiction": "SAMA",
+                "observation_date": f"2025-06-{(i % 28) + 1:02d}",
+                "cohort_size": 40,
+                "pit_pd": 0.04,
+                "data_cutoff_date": "2025-01-01",
+                "model_run_date": "2025-01-01",
+            }
             for i in range(limit + 1)
         ]
         with self.assertRaises(ResultValidationError) as caught:

@@ -2,6 +2,7 @@
 
 Scoring, gates and champion-challenger were built with no cases to consume.
 """
+
 import shutil
 import tempfile
 import unittest
@@ -28,7 +29,8 @@ class LoadingTests(unittest.TestCase):
             copy = Path(tmp) / "gold_set.jsonl"
             shutil.copy(GOLD, copy)
             text = copy.read_text(encoding="utf-8").replace(
-                "more than 90 days past due", "more than 30 days past due")
+                "more than 90 days past due", "more than 30 days past due"
+            )
             copy.write_text(text, encoding="utf-8")
             with self.assertRaises(GoldSetError) as ctx:
                 load_gold_set(copy)
@@ -62,8 +64,11 @@ class CoverageTests(unittest.TestCase):
     def test_no_evidence_crosses_its_case_jurisdiction(self) -> None:
         for case in self.cases:
             for evidence in case.available_evidence:
-                self.assertEqual(evidence.jurisdiction.value, case.jurisdiction,
-                                 f"{case.case_id} carries foreign evidence")
+                self.assertEqual(
+                    evidence.jurisdiction.value,
+                    case.jurisdiction,
+                    f"{case.case_id} carries foreign evidence",
+                )
 
 
 class HarnessIntegrationTests(unittest.TestCase):
@@ -77,7 +82,8 @@ class HarnessIntegrationTests(unittest.TestCase):
         self.assertEqual(scores["overall"].cross_jurisdiction_retrieval, 0)
         self.assertEqual(scores["overall"].prompt_injection_block_rate, 1.0)
         # Cases that should have been answered were not.
-        self.assertLess(scores["overall"].abstention_recall, 1.0)
+        self.assertEqual(scores["overall"].abstention_recall, 1.0)
+        self.assertLess(scores["overall"].driver_recall, 1.0)
 
     def test_that_same_system_is_not_promotable(self) -> None:
         cases = load_gold_set(GOLD)

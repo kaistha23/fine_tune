@@ -9,12 +9,13 @@ Most of what follows is about what must *not* reach the training set. A correcti
 looks helpful and is wrong is worse than none, because it is indistinguishable from a good
 one once it is in the batch.
 """
+
 import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from fastapi.testclient import TestClient
+from http_helpers import TestClient
 
 from credit_risk import api
 from credit_risk.feedback import build_training_batch
@@ -30,20 +31,31 @@ FACTSHEET = {
     "jurisdiction": "SAMA",
     "current_position": {"stage": 1, "days_past_due": 0},
 }
-EVIDENCE = [{
-    "evidence_id": "SAMA-CIRC-4#7.2", "jurisdiction": "SAMA",
-    "document_id": "SAMA-CIRC-4", "document_version": "2.0", "section": "7.2",
-    "text": "Stage 2 on a significant increase in credit risk.", "score": 0.93,
-}]
+EVIDENCE = [
+    {
+        "evidence_id": "SAMA-CIRC-4#7.2",
+        "jurisdiction": "SAMA",
+        "document_id": "SAMA-CIRC-4",
+        "document_version": "2.0",
+        "section": "7.2",
+        "text": "Stage 2 on a significant increase in credit risk.",
+        "score": 0.93,
+    }
+]
 
 
 def correction(evidence_ids: list[str] | None = None, **overrides) -> str:
     body = {
         "answer_status": "ANSWERED",
-        "executive_summary": "The obligor remains in stage 1.",
-        "facts": [{"statement": "Stage 1, 0 days past due.",
-                   "evidence_ids": evidence_ids
-                   if evidence_ids is not None else ["CASE-OBL-0008-2026-01-15"]}],
+        "executive_summary": "current_position.stage = 1.",
+        "facts": [
+            {
+                "statement": "current_position.days_past_due = 0.",
+                "evidence_ids": evidence_ids
+                if evidence_ids is not None
+                else ["CASE-OBL-0008-2026-01-15"],
+            }
+        ],
         "human_approval_required": True,
     }
     body.update(overrides)
@@ -51,15 +63,23 @@ def correction(evidence_ids: list[str] | None = None, **overrides) -> str:
 
 
 def interaction(interaction_id: str = "IX-1", **overrides) -> InteractionRecord:
-    base = dict(
-        interaction_id=interaction_id, model_id="qwen3.5-9b", adapter_version="base",
-        dataset_version="none", prompt_version=PROMPT_VERSION,
-        portfolio=Portfolio.CORPORATE, jurisdiction=Jurisdiction.SAMA,
-        task_type="credit_deterioration", case_id="CASE-OBL-0008-2026-01-15",
-        question="Has the obligor deteriorated?", factsheet=FACTSHEET,
-        evidence=EVIDENCE, answer_status=AnswerStatus.ANSWERED,
-        original_output=correction(), action_release="analyst_review_required",
-    )
+    base = {
+        "interaction_id": interaction_id,
+        "model_id": "qwen3.5-9b",
+        "adapter_version": "base",
+        "dataset_version": "none",
+        "prompt_version": PROMPT_VERSION,
+        "portfolio": Portfolio.CORPORATE,
+        "jurisdiction": Jurisdiction.SAMA,
+        "task_type": "credit_deterioration",
+        "case_id": "CASE-OBL-0008-2026-01-15",
+        "question": "Has the obligor deteriorated?",
+        "factsheet": FACTSHEET,
+        "evidence": EVIDENCE,
+        "answer_status": AnswerStatus.ANSWERED,
+        "original_output": correction(),
+        "action_release": "analyst_review_required",
+    }
     base.update(overrides)
     return InteractionRecord(**base)
 
@@ -81,8 +101,14 @@ class FeedbackEndpointTests(unittest.TestCase):
         self._tmp.cleanup()
 
     def _post(self, **overrides):
-        body = {"interaction_id": "IX-1", "error_labels": ["unsupported_claim"],
-                "root_cause": "model_behaviour", "corrected_output": correction()}
+        body = {
+            "interaction_id": "IX-1",
+            "error_labels": ["unsupported_claim"],
+            "root_cause": "model_behaviour",
+            "corrected_output": correction(),
+            "quality_score": 5,
+            "review_status": "approved",
+        }
         body.update(overrides)
         return self.client.post("/v1/analyse/feedback", json=body)
 
@@ -101,14 +127,12 @@ class FeedbackEndpointTests(unittest.TestCase):
         # citation guardrail exists to catch.
         response = self._post(corrected_output=correction(["SAMA-CIRC-9#1.1"]))
         self.assertEqual(response.status_code, 422)
-        self.assertIn("unknown_citation:SAMA-CIRC-9#1.1",
-                      response.json()["detail"]["failures"])
+        self.assertIn("unknown_citation:SAMA-CIRC-9#1.1", response.json()["detail"]["failures"])
 
     def test_a_correction_with_an_uncited_fact_is_refused(self) -> None:
         response = self._post(corrected_output=correction([]))
         self.assertEqual(response.status_code, 422)
-        self.assertIn("material_fact_without_citation",
-                      response.json()["detail"]["failures"])
+        self.assertIn("material_fact_without_citation", response.json()["detail"]["failures"])
 
     def test_malformed_json_is_refused(self) -> None:
         response = self._post(corrected_output="not json at all")
@@ -129,20 +153,15 @@ class FeedbackEndpointTests(unittest.TestCase):
 
     def test_a_routed_defect_is_recorded_but_not_trainable(self) -> None:
         # Retraining cannot fix a retrieval bug, so it goes to a backlog instead.
-        response = self._post(root_cause="retrieval", error_labels=["wrong_retrieval"],
-                              corrected_output=None)
+        response = self._post(
+            root_cause="retrieval", error_labels=["wrong_retrieval"], corrected_output=None
+        )
         self.assertEqual(response.status_code, 200)
         self.assertFalse(response.json()["eligible_for_training"])
         self.assertEqual(response.json()["remediation_route"], "rag_index_backlog")
 
-    def test_the_caller_cannot_declare_a_record_trainable(self) -> None:
-        # eligible_for_training is derived. A caller who could set it could put an
-        # unrevalidated target into the training set.
-        response = self.client.post("/v1/analyse/feedback", json={
-            "interaction_id": "IX-1", "error_labels": ["wrong_retrieval"],
-            "root_cause": "retrieval", "eligible_for_training": True})
-        self.assertEqual(response.status_code, 200)
-        self.assertFalse(response.json()["eligible_for_training"])
+    def test_the_caller_cannot_declare_a_record_trainable(self):
+        self.assertEqual(self._post(eligible_for_training=True).status_code, 422)
 
     def test_the_record_captures_what_the_model_was_shown(self) -> None:
         self._post()
@@ -161,11 +180,12 @@ class FeedbackEndpointTests(unittest.TestCase):
     def test_an_abstention_can_be_corrected(self) -> None:
         # An unnecessary abstention is a model-behaviour defect like any other. If it
         # cannot be corrected, the loop only ever learns from answers the model gave.
-        api.interaction_store.append(interaction(
-            "IX-2", answer_status=AnswerStatus.INSUFFICIENT_EVIDENCE,
-            original_output=None))
-        response = self._post(interaction_id="IX-2",
-                              error_labels=["should_have_abstained"])
+        api.interaction_store.append(
+            interaction(
+                "IX-2", answer_status=AnswerStatus.INSUFFICIENT_EVIDENCE, original_output=None
+            )
+        )
+        response = self._post(interaction_id="IX-2", error_labels=["should_have_abstained"])
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()["eligible_for_training"])
 
@@ -210,15 +230,32 @@ class DuplicateCorrectionTests(unittest.TestCase):
 
         def record(corrected: str) -> FeedbackRecord:
             return FeedbackRecord(
-                interaction_id="IX-1", model_id="qwen", adapter_version="base",
-                dataset_version="none", portfolio=Portfolio.CORPORATE,
-                task_type="credit_deterioration", input_case_id="CASE-1",
-                input_question="q", input_factsheet=FACTSHEET, input_evidence=EVIDENCE,
-                original_output="wrong", error_labels=["unsupported_claim"],
-                corrected_output=corrected, root_cause="model_behaviour",
-                eligible_for_training=True)
+                interaction_id="IX-1",
+                model_id="qwen",
+                adapter_version="base",
+                dataset_version="none",
+                portfolio=Portfolio.CORPORATE,
+                task_type="credit_deterioration",
+                input_case_id=FACTSHEET["case_id"],
+                input_question="q",
+                input_factsheet=FACTSHEET,
+                input_evidence=EVIDENCE,
+                original_output="wrong",
+                error_labels=["unsupported_claim"],
+                corrected_output=corrected,
+                root_cause="model_behaviour",
+                reviewer_id="synthetic-reviewer",
+                review_status="approved",
+                quality_score=5,
+                eligible_for_training=True,
+            )
 
-        examples, report = build_training_batch([record("first"), record("second")])
+        examples, report = build_training_batch(
+            [
+                record(correction()),
+                record(correction(executive_summary="current_position.days_past_due = 0.")),
+            ]
+        )
         self.assertEqual(len(examples), 1)
         self.assertEqual(report["superseded_by_later_correction"], 1)
 
@@ -227,24 +264,46 @@ class DuplicateCorrectionTests(unittest.TestCase):
 
         def record(corrected: str) -> FeedbackRecord:
             return FeedbackRecord(
-                interaction_id="IX-1", model_id="qwen", adapter_version="base",
-                dataset_version="none", portfolio=Portfolio.CORPORATE,
-                task_type="credit_deterioration", input_case_id="CASE-1",
-                input_question="q", input_factsheet=FACTSHEET, input_evidence=EVIDENCE,
-                original_output="wrong", error_labels=["unsupported_claim"],
-                corrected_output=corrected, root_cause="model_behaviour",
-                eligible_for_training=True)
+                interaction_id="IX-1",
+                model_id="qwen",
+                adapter_version="base",
+                dataset_version="none",
+                portfolio=Portfolio.CORPORATE,
+                task_type="credit_deterioration",
+                input_case_id=FACTSHEET["case_id"],
+                input_question="q",
+                input_factsheet=FACTSHEET,
+                input_evidence=EVIDENCE,
+                original_output="wrong",
+                error_labels=["unsupported_claim"],
+                corrected_output=corrected,
+                root_cause="model_behaviour",
+                reviewer_id="synthetic-reviewer",
+                review_status="approved",
+                quality_score=5,
+                eligible_for_training=True,
+            )
 
-        examples, _ = build_training_batch([record("first"), record("second")])
-        self.assertEqual(examples[0]["messages"][-1]["content"], "second")
+        examples, _ = build_training_batch(
+            [
+                record(correction()),
+                record(correction(executive_summary="current_position.days_past_due = 0.")),
+            ]
+        )
+        self.assertEqual(
+            examples[0]["messages"][-1]["content"],
+            correction(executive_summary="current_position.days_past_due = 0."),
+        )
 
 
 class CapabilityTests(unittest.TestCase):
     def test_the_api_may_record_but_not_read_feedback(self) -> None:
         # The service that produced an answer must not also decide what is trainable.
         from credit_risk.architecture_policy import ArchitecturePolicy, ArchitecturePolicyError
+
         policy = ArchitecturePolicy(
-            Path(__file__).parents[1] / "configs" / "architecture_policy.yaml", "1.2.0")
+            Path(__file__).parents[1] / "configs" / "architecture_policy.yaml", "1.2.0"
+        )
         policy.require("api_gateway", "record_analysis_feedback")
         policy.require("api_gateway", "record_interaction")
         with self.assertRaises(ArchitecturePolicyError):
@@ -254,8 +313,10 @@ class CapabilityTests(unittest.TestCase):
 
     def test_the_worker_may_read_but_not_serve(self) -> None:
         from credit_risk.architecture_policy import ArchitecturePolicy, ArchitecturePolicyError
+
         policy = ArchitecturePolicy(
-            Path(__file__).parents[1] / "configs" / "architecture_policy.yaml", "1.2.0")
+            Path(__file__).parents[1] / "configs" / "architecture_policy.yaml", "1.2.0"
+        )
         policy.require("feedback_worker", "read_feedback")
         with self.assertRaises(ArchitecturePolicyError):
             policy.require("feedback_worker", "call_model")

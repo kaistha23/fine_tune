@@ -2,6 +2,7 @@
 
 The retrieval layer consumed PolicyChunk records but nothing produced them.
 """
+
 import unittest
 from datetime import date
 from pathlib import Path
@@ -41,12 +42,16 @@ An exposure more than 90 days past due is classified in stage 3.
 
 
 def meta(**overrides) -> DocumentMeta:
-    base = dict(
-        document_id="SAMA-CIRC-4", jurisdiction=Jurisdiction.SAMA,
-        document_version="2.0", authority="SAMA", document_type="circular",
-        approval_status="approved", effective_from=date(2025, 1, 1),
-        confidentiality_level="internal",
-    )
+    base = {
+        "document_id": "SAMA-CIRC-4",
+        "jurisdiction": Jurisdiction.SAMA,
+        "document_version": "2.0",
+        "authority": "SAMA",
+        "document_type": "circular",
+        "approval_status": "approved",
+        "effective_from": date(2025, 1, 1),
+        "confidentiality_level": "internal",
+    }
     base.update(overrides)
     return DocumentMeta(**base)
 
@@ -83,24 +88,25 @@ class ChunkLineageTests(unittest.TestCase):
 
     def test_evidence_id_is_a_citable_clause_reference(self) -> None:
         chunks = {c.section_id: c for c in chunk_document(CIRCULAR, meta())}
-        self.assertEqual(chunks["7.2"].evidence_id, "SAMA-CIRC-4#7.2")
+        self.assertEqual(chunks["7.2"].evidence_id, "SAMA-CIRC-4@2.0#7.2")
 
     def test_a_split_clause_gets_distinguishable_citations(self) -> None:
         # A clause long enough to split produced several chunks that all cited the same
         # handle, so a reviewer following the citation could not tell which passage was
         # used and the guardrail counted them as one piece of evidence.
         long_clause = "5. Long clause\n\n" + "\n\n".join(
-            f"Paragraph {i} about provisioning and staging. " * 20 for i in range(8))
+            f"Paragraph {i} about provisioning and staging. " * 20 for i in range(8)
+        )
         chunks = chunk_document(long_clause, meta())
         self.assertGreater(len(chunks), 1, "fixture must actually split")
         ids = [c.evidence_id for c in chunks]
         self.assertEqual(len(ids), len(set(ids)))
-        self.assertEqual(ids[0], "SAMA-CIRC-4#5")
-        self.assertEqual(ids[1], "SAMA-CIRC-4#5/1")
+        self.assertEqual(ids[0], "SAMA-CIRC-4@2.0#5")
+        self.assertEqual(ids[1], "SAMA-CIRC-4@2.0#5/1")
 
     def test_a_single_chunk_clause_keeps_the_plain_citation(self) -> None:
         chunks = {c.section_id: c for c in chunk_document(CIRCULAR, meta())}
-        self.assertEqual(chunks["7.3"].evidence_id, "SAMA-CIRC-4#7.3")
+        self.assertEqual(chunks["7.3"].evidence_id, "SAMA-CIRC-4@2.0#7.3")
         self.assertEqual(chunks["7.3"].chunk_index, 0)
 
     def test_chunks_respect_the_size_ceiling(self) -> None:
@@ -111,23 +117,29 @@ class ChunkLineageTests(unittest.TestCase):
     def test_ingested_chunks_are_immediately_filterable(self) -> None:
         # An ingested chunk must satisfy the same predicate the retriever applies, or the
         # producer and the consumer disagree.
-        predicate = RetrievalPolicy(POLICY).build_predicate(AccessContext(
-            jurisdiction=Jurisdiction.SAMA, role="credit_analyst",
-            as_of_date=date(2026, 1, 15)))
+        predicate = RetrievalPolicy(POLICY).build_predicate(
+            AccessContext(
+                jurisdiction=Jurisdiction.SAMA, role="credit_analyst", as_of_date=date(2026, 1, 15)
+            )
+        )
         chunks = chunk_document(CIRCULAR, meta())
         self.assertTrue(any(chunk_is_visible(c, predicate) for c in chunks))
 
     def test_a_draft_document_produces_invisible_chunks(self) -> None:
-        predicate = RetrievalPolicy(POLICY).build_predicate(AccessContext(
-            jurisdiction=Jurisdiction.SAMA, role="credit_analyst",
-            as_of_date=date(2026, 1, 15)))
+        predicate = RetrievalPolicy(POLICY).build_predicate(
+            AccessContext(
+                jurisdiction=Jurisdiction.SAMA, role="credit_analyst", as_of_date=date(2026, 1, 15)
+            )
+        )
         chunks = chunk_document(CIRCULAR, meta(approval_status="draft"))
         self.assertFalse(any(chunk_is_visible(c, predicate) for c in chunks))
 
     def test_a_superseded_document_produces_invisible_chunks(self) -> None:
-        predicate = RetrievalPolicy(POLICY).build_predicate(AccessContext(
-            jurisdiction=Jurisdiction.SAMA, role="credit_analyst",
-            as_of_date=date(2026, 1, 15)))
+        predicate = RetrievalPolicy(POLICY).build_predicate(
+            AccessContext(
+                jurisdiction=Jurisdiction.SAMA, role="credit_analyst", as_of_date=date(2026, 1, 15)
+            )
+        )
         chunks = chunk_document(CIRCULAR, meta(effective_to=date(2025, 6, 30)))
         self.assertFalse(any(chunk_is_visible(c, predicate) for c in chunks))
 
@@ -141,9 +153,9 @@ class DeduplicationTests(unittest.TestCase):
     def test_identical_text_in_two_jurisdictions_is_kept(self) -> None:
         # SAMA and CBUAE often say the same thing. Collapsing them would silently make
         # one jurisdiction cite the other's document.
-        both = (chunk_document(CIRCULAR, meta())
-                + chunk_document(CIRCULAR, meta(document_id="CBUAE-CIRC-9",
-                                                jurisdiction=Jurisdiction.CBUAE)))
+        both = chunk_document(CIRCULAR, meta()) + chunk_document(
+            CIRCULAR, meta(document_id="CBUAE-CIRC-9", jurisdiction=Jurisdiction.CBUAE)
+        )
         self.assertEqual(len(deduplicate(both)), len(both))
 
 

@@ -1,4 +1,5 @@
 """Training and fusing commands (findings H2, H9)."""
+
 import unittest
 from pathlib import Path
 
@@ -34,7 +35,9 @@ class TrainingConfigTests(unittest.TestCase):
 class CommandTests(unittest.TestCase):
     def test_train_command(self) -> None:
         command = build_train_command(CONFIG)
-        self.assertEqual(command[:4], ["python", "-m", "mlx_lm.lora", "--config"])
+        self.assertEqual(
+            command[:4], [__import__("sys").executable, "-m", "credit_risk.training", "train"]
+        )
 
     def test_fuse_command_targets_a_servable_directory(self) -> None:
         # oMLX cannot load adapters, so an unfused adapter can never be served.

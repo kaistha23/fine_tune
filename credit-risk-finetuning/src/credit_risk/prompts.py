@@ -17,6 +17,7 @@ distribution, so it belongs in one file with a version on it: bump PROMPT_VERSIO
 wording changes, because an adapter trained under one version is not comparable with one
 trained under another.
 """
+
 from __future__ import annotations
 
 import json
@@ -24,7 +25,7 @@ from typing import Any
 
 # Bump whenever SYSTEM_PROMPT or the user-message shape changes. Recorded in dataset
 # provenance so a checkpoint can be traced to the prompt it was trained under.
-PROMPT_VERSION = "v2.0.0"
+PROMPT_VERSION = "v3.0.0"
 
 SYSTEM_PROMPT = (
     "You are a credit-risk advisory copilot. Use only the supplied factsheet and evidence. "
@@ -37,9 +38,12 @@ SYSTEM_PROMPT = (
 )
 
 
-def build_user_content(question: str, factsheet: dict[str, Any],
-                       evidence: list[dict[str, Any]],
-                       response_schema: dict[str, Any] | None = None) -> str:
+def build_user_content(
+    question: str,
+    factsheet: dict[str, Any],
+    evidence: list[dict[str, Any]],
+    response_schema: dict[str, Any] | None = None,
+) -> str:
     """The user turn, identical at training and inference time.
 
     Key order is fixed rather than left to dict insertion order: the serialised text is
@@ -50,16 +54,24 @@ def build_user_content(question: str, factsheet: dict[str, Any],
         "question": question,
         "context": {"factsheet": factsheet, "evidence": evidence},
     }
-    if response_schema is not None:
-        payload["response_schema"] = response_schema
+    if response_schema is None:
+        from credit_risk.schemas import CreditResponse, compact_json_schema
+
+        response_schema = compact_json_schema(CreditResponse.model_json_schema())
+    payload["response_schema"] = response_schema
     return json.dumps(payload, ensure_ascii=False, sort_keys=False)
 
 
-def build_messages(question: str, factsheet: dict[str, Any],
-                   evidence: list[dict[str, Any]],
-                   response_schema: dict[str, Any] | None = None) -> list[dict[str, str]]:
+def build_messages(
+    question: str,
+    factsheet: dict[str, Any],
+    evidence: list[dict[str, Any]],
+    response_schema: dict[str, Any] | None = None,
+) -> list[dict[str, str]]:
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user",
-         "content": build_user_content(question, factsheet, evidence, response_schema)},
+        {
+            "role": "user",
+            "content": build_user_content(question, factsheet, evidence, response_schema),
+        },
     ]

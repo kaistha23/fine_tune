@@ -12,26 +12,53 @@ from credit_risk.schemas import FeedbackRecord, Portfolio
 FACTSHEET = {
     "case_id": "CASE-OBL-0008-2026-01-15",
     "obligor_id": "OBL-0008",
+    "group_id": "OBL-0008",
+    "as_of_date": "2026-01-15",
     "portfolio": "sme",
     "jurisdiction": "SAMA",
     "current_position": {"stage": 1, "days_past_due": 0},
 }
-EVIDENCE = [{"evidence_id": "SAMA-CIRC-4#7.2", "jurisdiction": "SAMA",
-             "text": "Stage 2 on a significant increase in credit risk."}]
+EVIDENCE = [
+    {
+        "evidence_id": "SAMA-CIRC-4#7.2",
+        "jurisdiction": "SAMA",
+        "text": "Stage 2 on a significant increase in credit risk.",
+        "document_id": "SAMA-CIRC-4",
+        "document_version": "2.0",
+        "section": "7.2",
+        "score": 0.9,
+    }
+]
 
 
-def record(interaction_id: str, root_cause: str = "model_behaviour",
-           with_input: bool = True, **overrides) -> FeedbackRecord:
-    base = dict(
-        interaction_id=interaction_id, model_id="qwen", adapter_version="v1",
-        dataset_version="d1", portfolio=Portfolio.SME, task_type="ews",
-        input_case_id=f"case{interaction_id}", original_output="wrong",
-        error_labels=["unsupported_claim"], corrected_output="corrected",
-        root_cause=root_cause, eligible_for_training=True,
-    )
+def record(
+    interaction_id: str, root_cause: str = "model_behaviour", with_input: bool = True, **overrides
+) -> FeedbackRecord:
+    base = {
+        "interaction_id": interaction_id,
+        "model_id": "qwen",
+        "adapter_version": "v1",
+        "dataset_version": "d1",
+        "portfolio": Portfolio.SME,
+        "task_type": "ews",
+        "input_case_id": f"case{interaction_id}",
+        "original_output": "wrong",
+        "error_labels": ["unsupported_claim"],
+        "corrected_output": json.dumps(
+            {"answer_status": "INSUFFICIENT_EVIDENCE", "executive_summary": ""}
+        ),
+        "root_cause": root_cause,
+        "reviewer_id": "synthetic-reviewer",
+        "review_status": "approved",
+        "quality_score": 5,
+        "eligible_for_training": True,
+    }
     if with_input:
-        base.update(input_question="Has the obligor deteriorated?",
-                    input_factsheet=FACTSHEET, input_evidence=EVIDENCE)
+        base.update(
+            input_question="Has the obligor deteriorated?",
+            input_factsheet=FACTSHEET,
+            input_evidence=EVIDENCE,
+        )
     base.update(overrides)
     return FeedbackRecord(**base)
 
@@ -39,8 +66,8 @@ def record(interaction_id: str, root_cause: str = "model_behaviour",
 class FeedbackTests(unittest.TestCase):
     def test_only_model_behaviour_with_correction_enters_training(self) -> None:
         examples, report = build_training_batch(
-            [record("1"), record("2", root_cause="retrieval",
-                                 error_labels=["wrong_retrieval"])])
+            [record("1"), record("2", root_cause="retrieval", error_labels=["wrong_retrieval"])]
+        )
         self.assertEqual(len(examples), 1)
         self.assertEqual(report["root_causes"]["retrieval"], 1)
 
@@ -77,8 +104,7 @@ class ReconstructedInputTests(unittest.TestCase):
     def test_skipped_records_are_reported_not_silent(self) -> None:
         # A correction a reviewer took the trouble to write, that cannot be trained on, is
         # a defect in what the API captured - it must not vanish.
-        _, report = build_training_batch(
-            [record("1"), record("2", with_input=False)])
+        _, report = build_training_batch([record("1"), record("2", with_input=False)])
         self.assertEqual(report["training_examples"], 1)
         self.assertEqual(report["skipped_no_captured_input"], 1)
 
@@ -89,20 +115,34 @@ class ReconstructedInputTests(unittest.TestCase):
         self.assertEqual(examples[0]["prompt_version"], PROMPT_VERSION)
 
 
-
 class BatchLayoutTests(unittest.TestCase):
     """The worker's output must be mergeable with the seed dataset, and trainable as-is."""
 
     def _write_batch(self, directory) -> dict:
         import subprocess
         import sys
+
         feedback = directory / "feedback.jsonl"
         feedback.write_text(record("1").model_dump_json() + "\n", encoding="utf-8")
         env = dict(os.environ, CR_SERVICE_ROLE="feedback_worker")
+        (directory / "exclusions.json").write_text('{"groups":[],"content_hashes":[]}')
         result = subprocess.run(
-            [sys.executable, "-m", "credit_risk.feedback",
-             str(feedback), str(directory / "batch")],
-            capture_output=True, text=True, env=env, check=True)
+            [
+                sys.executable,
+                "-m",
+                "credit_risk.feedback",
+                str(feedback),
+                str(directory / "batch"),
+                "--out-of-time-from",
+                "2027-01-01",
+                "--exclusions",
+                str(directory / "exclusions.json"),
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=True,
+        )
         return json.loads(result.stdout)
 
     def test_it_writes_the_same_splits_as_the_seed_dataset(self) -> None:
@@ -111,8 +151,7 @@ class BatchLayoutTests(unittest.TestCase):
             self._write_batch(directory)
             for split in SPLITS:
                 self.assertTrue((directory / "batch" / f"{split}.jsonl").is_file())
-                self.assertTrue(
-                    (directory / "batch" / f"{split}.provenance.jsonl").is_file())
+                self.assertTrue((directory / "batch" / f"{split}.provenance.jsonl").is_file())
 
     def test_the_training_line_carries_only_messages(self) -> None:
         # mlx-lm reads each line as a training record and unknown keys are not guaranteed
@@ -131,9 +170,12 @@ class BatchLayoutTests(unittest.TestCase):
             directory = pathlib.Path(tmp)
             self._write_batch(directory)
             lines = [
-                line for split in SPLITS
+                line
+                for split in SPLITS
                 for line in (directory / "batch" / f"{split}.provenance.jsonl")
-                .read_text().splitlines() if line.strip()
+                .read_text()
+                .splitlines()
+                if line.strip()
             ]
             self.assertEqual(len(lines), 1)
             self.assertIn("example_id", json.loads(lines[0]))
@@ -150,6 +192,7 @@ class BatchLayoutTests(unittest.TestCase):
             for split in SPLITS:
                 if split != expected:
                     self.assertEqual(report["splits"][split], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

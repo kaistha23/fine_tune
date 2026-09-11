@@ -6,7 +6,7 @@ from collections import Counter
 from pathlib import Path
 
 from credit_risk.architecture_policy import ArchitecturePolicy
-from credit_risk.dataset import DEFAULT_QUESTION, SPLITS, stable_split
+from credit_risk.dataset import DEFAULT_QUESTION
 from credit_risk.prompts import PROMPT_VERSION, build_messages
 from credit_risk.schemas import FeedbackRecord
 from credit_risk.settings import settings
@@ -27,6 +27,10 @@ REMEDIATION_ROUTES = {
 
 
 def load_feedback(path: Path) -> list[FeedbackRecord]:
+    if path.suffix in (".sqlite3", ".db"):
+        from credit_risk.feedback_store import FeedbackStore
+
+        return FeedbackStore(path).read_all()
     records: list[FeedbackRecord] = []
     with path.open("r", encoding="utf-8") as handle:
         for line in handle:
@@ -55,8 +59,7 @@ def build_training_batch(records: list[FeedbackRecord]) -> tuple[list[dict], dic
     sql_reviews: Counter[str] = Counter()
 
     root_causes = Counter(r.root_cause for r in by_interaction.values())
-    error_labels = Counter(
-        label for r in by_interaction.values() for label in r.error_labels)
+    error_labels = Counter(label for r in by_interaction.values() for label in r.error_labels)
 
     unreconstructable = 0
     for record in by_interaction.values():
@@ -67,6 +70,9 @@ def build_training_batch(records: list[FeedbackRecord]) -> tuple[list[dict], dic
             record.eligible_for_training
             and record.root_cause in TRAINING_ROOT_CAUSES
             and record.corrected_output
+            and record.reviewer_id
+            and record.review_status == "approved"
+            and record.quality_score >= 4
         ):
             continue
 
@@ -78,24 +84,37 @@ def build_training_batch(records: list[FeedbackRecord]) -> tuple[list[dict], dic
             unreconstructable += 1
             continue
 
-        eligible.append({
-            "example_id": f"feedback-{record.interaction_id}",
-            # Carried so the batch can be split on the same obligor hash as the seed
-            # dataset. Written to the provenance sidecar, never into the training line.
-            "obligor_id": str(record.input_factsheet.get("obligor_id", record.input_case_id)),
-            "portfolio": record.portfolio.value,
-            "task_type": record.task_type,
-            "messages": [
-                *build_messages(
-                    question=record.input_question or DEFAULT_QUESTION,
-                    factsheet=record.input_factsheet,
-                    evidence=record.input_evidence,
-                ),
-                {"role": "assistant", "content": record.corrected_output},
-            ],
-            "source": "validated_feedback",
-            "prompt_version": PROMPT_VERSION,
-        })
+        from credit_risk.guardrails import validate_output
+        from credit_risk.schemas import CreditResponse, Evidence
+
+        checked = validate_output(
+            CreditResponse.model_validate_json(record.corrected_output),
+            [Evidence.model_validate(e) for e in record.input_evidence],
+            record.input_case_id,
+            record.input_factsheet,
+        )
+        if not checked.passed:
+            continue
+        eligible.append(
+            {
+                "example_id": f"feedback-{record.interaction_id}",
+                # Carried so the batch can be split on the same obligor hash as the seed
+                # dataset. Written to the provenance sidecar, never into the training line.
+                "obligor_id": str(record.input_factsheet.get("obligor_id", record.input_case_id)),
+                "portfolio": record.portfolio.value,
+                "task_type": record.task_type,
+                "messages": [
+                    *build_messages(
+                        question=record.input_question or DEFAULT_QUESTION,
+                        factsheet=record.input_factsheet,
+                        evidence=record.input_evidence,
+                    ),
+                    {"role": "assistant", "content": record.corrected_output},
+                ],
+                "source": "validated_feedback",
+                "prompt_version": PROMPT_VERSION,
+            }
+        )
 
     report = {
         "input_records": len(records),
@@ -123,9 +142,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", type=Path)
     parser.add_argument(
-        "output_dir", type=Path,
+        "output_dir",
+        type=Path,
         help="Directory to write train/valid/test.jsonl and their provenance sidecars, "
-             "in the same layout as credit_risk.dataset so the two can be merged")
+        "in the same layout as credit_risk.dataset so the two can be merged",
+    )
+    parser.add_argument("--exclusions", type=Path, required=True)
+    parser.add_argument("--out-of-time-from", required=True)
     args = parser.parse_args()
 
     # The worker's role is declared in the policy; enforce it here rather than trusting
@@ -135,34 +158,37 @@ def main() -> None:
     policy.require(settings.service_role, "classify_root_cause")
     policy.require(settings.service_role, "write_training_batch")
 
-    examples, report = build_training_batch(load_feedback(args.input))
-    args.output_dir.mkdir(parents=True, exist_ok=True)
+    from datetime import date
 
-    chat = {s: (args.output_dir / f"{s}.jsonl").open("w", encoding="utf-8")
-            for s in SPLITS}
-    meta = {s: (args.output_dir / f"{s}.provenance.jsonl").open("w", encoding="utf-8")
-            for s in SPLITS}
-    counts = dict.fromkeys(SPLITS, 0)
-    try:
-        for example in examples:
-            # Split on the same obligor hash the seed dataset uses. If the two producers
-            # split independently, a borrower corrected in production could sit in train
-            # from one file and test from the other, and the test score would be reported
-            # against data the adapter had already seen.
-            split = stable_split(example["obligor_id"])
-            chat[split].write(
-                json.dumps({"messages": example["messages"]}, ensure_ascii=False) + "\n")
-            # Provenance to a sidecar, never into the training line: mlx-lm reads each
-            # line as a training record and unknown keys are not guaranteed to be ignored.
-            meta[split].write(json.dumps(
-                {k: v for k, v in example.items() if k != "messages"},
-                ensure_ascii=False) + "\n")
-            counts[split] += 1
-    finally:
-        for handle in list(chat.values()) + list(meta.values()):
-            handle.close()
+    from credit_risk.dataset import build_dataset
 
-    report["splits"] = counts
+    records = load_feedback(args.input)
+    examples, report = build_training_batch(records)
+    eligible_ids = {e["example_id"].removeprefix("feedback-") for e in examples}
+    payloads = [
+        {
+            "case": r.input_factsheet,
+            "target": r.corrected_output,
+            "task_type": r.task_type,
+            "question": r.input_question,
+            "evidence": r.input_evidence,
+            "review": {
+                "reviewer_id": r.reviewer_id,
+                "status": r.review_status,
+                "quality_score": r.quality_score,
+            },
+            "data_classification": r.data_classification,
+        }
+        for r in {r.interaction_id: r for r in records}.values()
+        if r.interaction_id in eligible_ids
+    ]
+    manifest = build_dataset(
+        payloads,
+        args.output_dir,
+        date.fromisoformat(args.out_of_time_from),
+        json.loads(args.exclusions.read_text()),
+    )
+    report["splits"] = manifest["counts"]
     print(json.dumps(report, indent=2))
 
 

@@ -1,8 +1,9 @@
-# MLX-LM QLoRA config. Runs natively on macOS only - never inside Docker, which cannot
+# MLX-LM quantized-LoRA config. Runs natively on macOS only - never inside Docker, which cannot
 # reach Apple Metal/ANE.
 #
-# The base model is a 4-bit quantised checkpoint, which is what makes this QLoRA rather
-# than plain LoRA; mlx-lm infers that from the weights, so fine_tune_type stays "lora".
+# The base is MLX 4-bit affine quantized (group size 64). MLX-LM calls adapter training
+# on quantized weights QLoRA, while this does not imply the original paper's NF4,
+# double-quantization or paged-optimizer mechanisms. fine_tune_type remains "lora".
 #
 # Finding C1 - RESOLVED on this Mac (M5 Pro, 64 GB, macOS 26.5.2, mlx 0.32.2 / mlx-lm
 # 0.31.3). mlx-community/Qwen3.5-9B-4bit declares Qwen3_5ForConditionalGeneration and
@@ -25,14 +26,24 @@
 model: mlx-community/Qwen3.5-9B-4bit
 train: true
 data: data/training/current
-adapter_path: adapters/credit-risk-advisory
+adapter_path: adapters/candidates/credit-risk-v3
 
 fine_tune_type: lora
 num_layers: 16
 batch_size: 1
-iters: 1200
+epochs: 2
 learning_rate: 2.0e-5
 max_seq_length: 2048
+optimizer: adam
+optimizer_config:
+  adam: {}
+  adamw: {}
+  muon: {}
+  sgd: {}
+  adafactor: {}
+lr_schedule: null
+early_stopping_patience: 3
+early_stopping_min_delta: 0.001
 
 # Train the loss on the assistant turn only. On this prompt shape the input is roughly
 # 70% of the tokens, so without masking most of the gradient goes into reproducing the
@@ -49,6 +60,8 @@ lora_parameters:
   rank: 16
   scale: 2.0
   dropout: 0.05
+  # Omit keys to adapt every eligible linear module in the selected layers. Workbench
+  # runs record either this resolved policy or an explicit Qwen3.5 module allowlist.
 
 steps_per_report: 10
 steps_per_eval: 100

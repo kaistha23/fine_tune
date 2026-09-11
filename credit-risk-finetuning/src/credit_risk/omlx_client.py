@@ -5,12 +5,11 @@ from typing import Any
 import httpx
 
 from credit_risk.prompts import build_messages
-from credit_risk.schemas import CreditResponse, Evidence
+from credit_risk.schemas import CreditResponse, Evidence, compact_json_schema
 
 
 class OMLXClient:
-    def __init__(self, base_url: str, model: str, api_key: str = "",
-                 timeout: float = 120.0):
+    def __init__(self, base_url: str, model: str, api_key: str = "", timeout: float = 120.0):
         self.base_url = base_url.rstrip("/")
         self.model = model
         # oMLX refuses unauthenticated requests when a key is configured. Without this the
@@ -23,14 +22,26 @@ class OMLXClient:
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
 
-    def generate_credit_response(self, question: str, factsheet: dict[str, Any],
-                                 evidence: list[Evidence]) -> CreditResponse:
+    def generate_credit_response(
+        self, question: str, factsheet: dict[str, Any], evidence: list[Evidence]
+    ) -> CreditResponse:
         messages = build_messages(
             question=question,
             factsheet=factsheet,
             evidence=[item.model_dump(mode="json") for item in evidence],
-            response_schema=CreditResponse.model_json_schema(),
+            response_schema=compact_json_schema(CreditResponse.model_json_schema()),
         )
+        # UTF-8 bytes give a conservative upper bound for byte-fallback tokenizers;
+        # reserve output tokens before sending. No silent context truncation.
+        import json
+
+        from credit_risk.settings import settings
+
+        if (
+            len(json.dumps(messages, ensure_ascii=False).encode("utf-8")) + 2500
+            > settings.max_context_tokens
+        ):
+            raise ValueError("Context exceeds configured token budget")
         with httpx.Client(timeout=self.timeout) as client:
             result = client.post(
                 f"{self.base_url}/chat/completions",
@@ -39,8 +50,11 @@ class OMLXClient:
                     "model": self.model,
                     "messages": messages,
                     "temperature": 0.1,
+                    "top_p": 0.9,
+                    "top_k": 20,
                     "max_tokens": 2500,
                     "response_format": {"type": "json_object"},
+                    "chat_template_kwargs": {"enable_thinking": False},
                 },
             )
             result.raise_for_status()

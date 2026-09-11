@@ -9,6 +9,7 @@ character offset 4000 is useless to a reviewer who has to verify it. Splitting m
 also strips the condition off its rule, which is how a model ends up asserting an
 obligation without its exception.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -89,7 +90,7 @@ def split_sections(text: str) -> list[Section]:
         flush()
         buffer = []
         section_id, title, depth = found
-        del path[depth - 1:]
+        del path[depth - 1 :]
         path.append(f"{section_id} {title}".strip())
         current_id = section_id or ".".join(str(i + 1) for i in range(len(path)))
     flush()
@@ -135,34 +136,35 @@ def chunk_document(text: str, meta: DocumentMeta) -> list[PolicyChunk]:
                 # Fragments too small to stand alone rejoin the previous chunk rather
                 # than becoming a citation that says nothing.
                 previous = chunks[-1]
-                chunks[-1] = previous.model_copy(
-                    update={"text": f"{previous.text}\n\n{body}"})
+                chunks[-1] = previous.model_copy(update={"text": f"{previous.text}\n\n{body}"})
                 continue
             digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
-            chunks.append(PolicyChunk(
-                chunk_id=f"{meta.document_id}:{section.section_id or 'body'}:{index}",
-                jurisdiction=meta.jurisdiction,
-                document_id=meta.document_id,
-                document_version=meta.document_version,
-                content_hash=digest,
-                authority=meta.authority,
-                document_type=meta.document_type,
-                approval_status=meta.approval_status,
-                effective_from=meta.effective_from,
-                effective_to=meta.effective_to,
-                supersedes_document_id=meta.supersedes_document_id,
-                section_id=section.section_id,
-                chunk_index=index,
-                heading_path=section.heading_path,
-                confidentiality_level=meta.confidentiality_level,
-                allowed_roles=list(meta.allowed_roles),
-                portfolio=list(meta.portfolio),
-                text=body,
-                summary=body[:200],
-                keywords=[],
-                source_system=meta.source_system,
-                source_uri=meta.source_uri,
-            ))
+            chunks.append(
+                PolicyChunk(
+                    chunk_id=f"{meta.document_id}@{meta.document_version}:{section.section_id or 'body'}:{index}",
+                    jurisdiction=meta.jurisdiction,
+                    document_id=meta.document_id,
+                    document_version=meta.document_version,
+                    content_hash=digest,
+                    authority=meta.authority,
+                    document_type=meta.document_type,
+                    approval_status=meta.approval_status,
+                    effective_from=meta.effective_from,
+                    effective_to=meta.effective_to,
+                    supersedes_document_id=meta.supersedes_document_id,
+                    section_id=section.section_id,
+                    chunk_index=index,
+                    heading_path=section.heading_path,
+                    confidentiality_level=meta.confidentiality_level,
+                    allowed_roles=list(meta.allowed_roles),
+                    portfolio=list(meta.portfolio),
+                    text=body,
+                    summary=body[:200],
+                    keywords=[],
+                    source_system=meta.source_system,
+                    source_uri=meta.source_uri,
+                )
+            )
     return chunks
 
 
@@ -175,7 +177,19 @@ def deduplicate(chunks: list[PolicyChunk]) -> list[PolicyChunk]:
     seen: set[tuple[str, str]] = set()
     unique: list[PolicyChunk] = []
     for chunk in chunks:
-        key = (chunk.jurisdiction.value, chunk.content_hash)
+        key = (
+            chunk.jurisdiction.value,
+            chunk.document_id,
+            chunk.document_version,
+            chunk.section_id,
+            chunk.content_hash,
+            chunk.approval_status,
+            chunk.effective_from,
+            chunk.effective_to,
+            chunk.confidentiality_level,
+            tuple(sorted(chunk.allowed_roles)),
+            tuple(sorted(chunk.portfolio)),
+        )
         if key in seen:
             continue
         seen.add(key)

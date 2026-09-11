@@ -12,7 +12,10 @@ class Settings(BaseSettings):
     retrieval_policy: Path = Path("configs/retrieval.yaml")
     evaluation_thresholds: Path = Path("configs/evaluation_thresholds.yaml")
     service_role: str = "api_gateway"
-    service_token: str = "local-dev-only-change-me"
+    service_token: str = ""
+    reviewers: dict[str, dict[str, str]] = {}
+    review_store_path: Path = Path("data/audit/reviews.sqlite3")
+    audit_store_path: Path = Path("data/audit/interactions.sqlite3")
     data_service_url: str = "http://data-service:8081"
     # oMLX on the target Mac is configured for 9905, not the upstream default 8000.
     omlx_base_url: str = "http://127.0.0.1:9905/v1"

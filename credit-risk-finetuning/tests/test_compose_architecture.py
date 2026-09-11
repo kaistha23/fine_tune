@@ -16,7 +16,7 @@ class ComposeArchitectureTests(unittest.TestCase):
 
     def test_api_has_no_database_volume(self) -> None:
         api = self.compose["services"]["api"]
-        self.assertFalse(api.get("volumes"))
+        self.assertTrue(all("curated" not in v for v in api.get("volumes", [])))
 
     def test_only_data_service_mounts_curated_data_read_only(self) -> None:
         data_service = self.compose["services"]["data-service"]
@@ -42,14 +42,12 @@ class ComposeArchitectureTests(unittest.TestCase):
 
     def test_only_the_api_is_published_to_the_host(self) -> None:
         published = {
-            name for name, service in self.compose["services"].items()
-            if service.get("ports")
+            name for name, service in self.compose["services"].items() if service.get("ports")
         }
         self.assertEqual(published, {"api"})
 
     def test_data_service_is_only_on_the_internal_network(self) -> None:
-        self.assertEqual(self.compose["services"]["data-service"]["networks"],
-                         ["restricted-data"])
+        self.assertEqual(self.compose["services"]["data-service"]["networks"], ["restricted-data"])
 
 
 if __name__ == "__main__":
@@ -108,28 +106,35 @@ class PinnedVersionTests(unittest.TestCase):
 
     def test_the_compose_registry_pin_matches_the_registry_file(self) -> None:
         registry = yaml.safe_load(
-            (Path(__file__).parents[1] / "configs" / "schema_registry.yaml")
-            .read_text(encoding="utf-8"))
+            (Path(__file__).parents[1] / "configs" / "schema_registry.yaml").read_text(
+                encoding="utf-8"
+            )
+        )
         self.assertEqual(
-            str(self._environment()["CR_SCHEMA_REGISTRY_VERSION"]),
-            str(registry["version"]))
+            str(self._environment()["CR_SCHEMA_REGISTRY_VERSION"]), str(registry["version"])
+        )
 
     def test_the_compose_policy_pin_matches_the_policy_file(self) -> None:
         policy = yaml.safe_load(
-            (Path(__file__).parents[1] / "configs" / "architecture_policy.yaml")
-            .read_text(encoding="utf-8"))
+            (Path(__file__).parents[1] / "configs" / "architecture_policy.yaml").read_text(
+                encoding="utf-8"
+            )
+        )
         self.assertEqual(
-            str(self._environment()["CR_ARCHITECTURE_POLICY_VERSION"]),
-            str(policy["version"]))
+            str(self._environment()["CR_ARCHITECTURE_POLICY_VERSION"]), str(policy["version"])
+        )
 
     def test_settings_pin_the_same_versions_as_compose(self) -> None:
         from credit_risk.settings import Settings
+
         defaults = Settings()
         environment = self._environment()
-        self.assertEqual(defaults.schema_registry_version,
-                         str(environment["CR_SCHEMA_REGISTRY_VERSION"]))
-        self.assertEqual(defaults.architecture_policy_version,
-                         str(environment["CR_ARCHITECTURE_POLICY_VERSION"]))
+        self.assertEqual(
+            defaults.schema_registry_version, str(environment["CR_SCHEMA_REGISTRY_VERSION"])
+        )
+        self.assertEqual(
+            defaults.architecture_policy_version, str(environment["CR_ARCHITECTURE_POLICY_VERSION"])
+        )
 
     def test_no_credential_is_a_literal_in_compose(self) -> None:
         # Tokens and keys must come from the host environment, never from the file.
@@ -138,4 +143,3 @@ class PinnedVersionTests(unittest.TestCase):
                 value = str(self._environment().get(name, ""))
                 if value:
                     self.assertTrue(value.startswith("${"), f"{name} is a literal")
-

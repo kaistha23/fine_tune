@@ -1,0 +1,16 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Local credit-risk SQL review</title>
+<style>body{font:16px system-ui;max-width:1000px;margin:40px auto;padding:20px;background:#f5f7fa;color:#182c3c}textarea,input{box-sizing:border-box;width:100%;padding:12px;margin:8px 0}textarea{height:260px}button{padding:12px;margin:8px}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:white;padding:20px}label{display:block;font-weight:600}</style>
+<h1>Credit-risk SQL review</h1><p>Synthetic or masked data only. SQL is read-only. Every correction needs a new approval. Each approval permits one execution.</p>
+<label>Reviewer credential<input type="password" id="credential" autocomplete="off"></label>
+<label>Structured query plan<textarea id="plan">{"portfolio":"corporate","jurisdiction":"SAMA","entity_level":"obligor","obligor_id":"OBL-0008","date_from":"2025-01-31","date_to":"2025-12-31","as_of_date":"2026-01-15","metrics":["current_ratio","pit_pd"]}</textarea></label>
+<button id="prepare">Prepare review</button><label>Exact SQL review packet (sensitive parameters masked)</label><pre id="packet">No query prepared.</pre>
+<label>Review comment<input id="comment" maxlength="4000"></label><button id="approve" disabled>Approve</button><button id="reject" disabled>Reject</button><button id="correct" disabled>Reject and submit corrected plan above</button><button id="execute" disabled>Execute approved factsheet</button><pre id="result" role="status"></pre>
+<script>
+let revision=null;const el=id=>document.getElementById(id);let reviewedPlan=null;
+async function call(path,body){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+el('credential').value},body:JSON.stringify(body)});const data=await r.json();if(!r.ok)throw Error(JSON.stringify(data));return data}
+function pending(packet){revision=packet.revision_id;el('packet').textContent=JSON.stringify(packet,null,2);for(const id of ['approve','reject','correct'])el(id).disabled=false;el('execute').disabled=true}
+async function action(fn){try{el('result').textContent=JSON.stringify(await fn(),null,2)}catch(e){el('result').textContent=e.message}}
+el('prepare').onclick=()=>action(async()=>{reviewedPlan=JSON.parse(el('plan').value);const r=await call('/v1/query/validate',{user_text:'Review synthetic credit factsheet',query_plan:reviewedPlan});pending(r.sql_review);return r});
+for(const id of ['approve','reject','correct'])el(id).onclick=()=>action(async()=>{const body={revision_id:revision,decision:id==='approve'?'approved':'rejected',comment:el('comment').value};if(id==='correct')body.corrected_query_plan=JSON.parse(el('plan').value);const r=await call('/v1/query/review',body);for(const b of ['approve','reject','correct'])el(b).disabled=true;if(r.corrected_sql_review){reviewedPlan=body.corrected_query_plan;pending(r.corrected_sql_review)}else el('execute').disabled=id!=='approve';return r});
+el('execute').onclick=()=>action(async()=>{el('execute').disabled=true;return call('/v1/factsheet',{user_text:'Build reviewed factsheet',query_plan:reviewedPlan,revision_id:revision})});
+</script></html>

@@ -1,0 +1,137 @@
+{
+  "documents": {
+    "Credit_Risk_Fine_Tuning_Codex_Handover (1).md": "a085a6532cdb3c1612d00d75070f3f026a81f54d746ccb16b4fed08af7c8d413",
+    "Credit_Risk_Qwen_Local_Fine_Tuning_Plan (1).md": "7a66848152b328e1eaab9efe2230bf3b30c0593692a2f84779e63ba676af7fa4",
+    "Qwen_Credit_Risk_Fine_Tuning_Feedback_Plan (1).md": "9c40db273c3c5400fe9975ea82e78a887cdee4299958a68f74c2c1b95b1f8b85"
+  },
+  "files": {
+    ".dockerignore": {
+      "baseline_sha256": "dac678bc3f654ff13c5360a387e772a0c34e61556c92e1aa5b89e1449d99da0f",
+      "current_sha256": "914ea477370034f0e240a23c65d7d80c7ecee5ffc3a1b3513cb9af1f2f9d1712"
+    },
+    ".env.docker.example": {
+      "baseline_sha256": "56c63ca25fff40d25876d2453f7e55d7b1fe2deae590328ea3a763c1ae09f204",
+      "current_sha256": "90beb6be493a02c7c894cfe4caa23c5ef556b28175a590d940eafafdc3de4945"
+    },
+    ".env.example": {
+      "baseline_sha256": "8ba3956f2943d5ea7dde95f1643f396f6932cdce7756c1e229c93ce2aa13b175",
+      "current_sha256": "c1cec516958048e7407a87d984a2f02d2d086824a511fa9b95798b7b63859bce"
+    },
+    ".gitignore": {
+      "baseline_sha256": "fce578ccd8a328d49f464306dde3e1775fae35c6232928b3013dd6d56e5f898c",
+      "current_sha256": "46ad3494824817f55ade9291ca263d1d41ae56210982e47c2ba17c2e7cfc462e"
+    },
+    "Dockerfile": {
+      "baseline_sha256": "c4d49175702428bd589e45e8710214329f53b1f5be444324a62d6f879ae1f1c7",
+      "current_sha256": "84e531f8fed2789c269d3f0586915a70e02e2d7a997775590fe3f8fb7cbad4d9"
+    },
+    "README.md": {
+      "baseline_sha256": "b1870303ff7193e728911ebe2a21d82e453c06ab6daae48a3f39c645e0cd70be",
+      "current_sha256": "6b78b6e3470c70c3b56b39d69d046926ee62f1ceae4b212d7ff6b474f35c8dc1"
+    },
+    "compose.yaml": {
+      "baseline_sha256": "93c64de4baabda1f513d06c48ec4a902f2db0b093036af73d2e4d376c47ba0da",
+      "current_sha256": "3aa6c514f2af7f321ac936f7930877d3f41d412928da4329cecfd96809c6dfef"
+    },
+    "configs/architecture_policy.yaml": {
+      "baseline_sha256": "166a94dd9e7f9ede14c085bac04d2cd110545ddb49fccd29988b3c366cb3ef00",
+      "current_sha256": "45e9382a4087173729f9900f9915a7c6bd7f86168b6d969a7681446149679e43"
+    },
+    "configs/evaluation_thresholds.yaml": {
+      "baseline_sha256": "334af5d4abf5a3b131c0d72295a4ad688076f46d5176abfd038283c72966485f",
+      "current_sha256": "f5ab62ec129699a86b3347058515dbe4094b674e61e7207413e74de4760ca2e5"
+    },
+    "configs/schema_registry.yaml": {
+      "baseline_sha256": "8216d9b98b49eb213436ae3c3748dc8b59ea6c2848a8d42e91a7fd0ab432e4ae",
+      "current_sha256": "969ad84ace2266f7f2615fda5c32054c9258338fe8d80050fa25e394b32bbcab"
+    },
+    "configs/training.yaml": {
+      "baseline_sha256": "edf71972bb7dc0cff1d0fa6375a4b6aea64af7cfd45a95debe7e5d2ae354322a",
+      "current_sha256": "b317dc43fe092c57057c3435d203f41fc3492d248381799f2868dd5057e58ab9"
+    },
+    "pyproject.toml": {
+      "baseline_sha256": "1f784bf55a7300edc36317ca076566272f233b588b8edcfdc5b87ca4cc20ba6b",
+      "current_sha256": "44d5c9cd413ca483261a5cd31e2c2035c75c18ab3927839cb5eda0679e53ac0d"
+    },
+    "src/credit_risk/__init__.py": {
+      "baseline_sha256": "1cc9557e0610a99fb5175737a7bdb2f9b12feee81e24a7178860ed7bdf770166",
+      "current_sha256": "623963ea8cef3342aebc5a0e7d3427fddfdf755ca80b9db87443d7e7464d5dd6"
+    },
+    "src/credit_risk/api.py": {
+      "baseline_sha256": "00d672642566fc99b6376e402b9c75faecde0e264522996c07a79305d19fca40",
+      "current_sha256": "8f12e8e527a1101a4f513a31617f4d31db7c34d7c3f90e52d489feef9de0923f"
+    },
+    "src/credit_risk/architecture_policy.py": {
+      "baseline_sha256": "2a36e19e7b6bfb25e9265bf57a7241097da5265a23dba3cde07021d20b6c04bf",
+      "current_sha256": "21e0eb168589a6151d86f71db51b7824ff6ddf5c709098dd9ed28096b1334a2f"
+    },
+    "src/credit_risk/calculations.py": {
+      "baseline_sha256": "de7a1172bd0e0576f04540e56764bfbc7b99a36c90989a9b16f4af63e042057d",
+      "current_sha256": "2d47e95df4b9be67b066438cf33453f78f9cfd5d8ba8dfcc7b2e5b2f5484ed6b"
+    },
+    "src/credit_risk/data_service.py": {
+      "baseline_sha256": "172505d0fad3f38e91ba67fbe03871200b3ac9573505581318975472a1c6b69b",
+      "current_sha256": "32708d78d04654ee91a006859cf9947263570705c152507f52411a8e6268238d"
+    },
+    "src/credit_risk/dataset.py": {
+      "baseline_sha256": "7d7386d6a96e9027ab57594e92a0c74e665bfd7adf24f97746ace6d21f8950c1",
+      "current_sha256": "a1845638790d487e325a020a95bffd17656550c94f371b8da2e392cd2c349d5c"
+    },
+    "src/credit_risk/feedback.py": {
+      "baseline_sha256": "82e451e9e2ab80c0a16336190ab99404b47db12f937d4cef85473375dd0cf58d",
+      "current_sha256": "df58f429fc81f6f16e43cf84578041ce3f046d8971a6232a81e591176e5abc8b"
+    },
+    "src/credit_risk/guardrails.py": {
+      "baseline_sha256": "bb4ca9026004237b7d2569944bb98e3d3c53f66222bd3332a0f6f907670ca740",
+      "current_sha256": "a3fe60ec10e92324f5b06127f2ce87043bb7699d6573f4d1d204ecf336ff56d8"
+    },
+    "src/credit_risk/omlx_client.py": {
+      "baseline_sha256": "812c183370e629dbde8fc3f5054eda89757ae2aaf99d424a7a970353e238624e",
+      "current_sha256": "ad26f6631f6be61f9f22ebc747d585c0a4662b2249e29a68ec7b8ab2b4274d8c"
+    },
+    "src/credit_risk/query_guard.py": {
+      "baseline_sha256": "418d6b1b556db84bf6e4e4cf11468858637cea838fbe3f8f458a21390eaa9bb7",
+      "current_sha256": "74a2188cbd36b7f7945df4ef2a52a90688b380a7863d8c2a1149d77e338b0fef"
+    },
+    "src/credit_risk/schemas.py": {
+      "baseline_sha256": "ef68c9704189d8ac5d904bc4f37db79192ef4831416be87fbea4f048dc3e2094",
+      "current_sha256": "65177aed19d46a5abb7dc3e02d2615b1e723c0ef4468216ddd35f75269934d3f"
+    },
+    "src/credit_risk/settings.py": {
+      "baseline_sha256": "1b1ca63d90bfceedc84bafaf144e71c8f5645586a7617ef012515be8ed551121",
+      "current_sha256": "73d8d4e2e9119fc9b3a1bdf3553760dbc16a6f52b72e261f5f19c12a56de0512"
+    },
+    "src/credit_risk/training.py": {
+      "baseline_sha256": "ee91bc389eb5b36450049f9a8301c8da5970fcd644a0760eb8ab8181407ad39f",
+      "current_sha256": "2ff1fdad783a555c75e391a32ba9e65873ea7ba3b6a3be3f4f6476e71cc10b94"
+    },
+    "tests/test_architecture_policy.py": {
+      "baseline_sha256": "b513af15c1fca096a97ec585cc602ff4916cd1636b260108c1c3f94d32551353",
+      "current_sha256": "28c4762a060039a02b9a4db7290988cfb30a7cde42193c9030b761bbbc7b0016"
+    },
+    "tests/test_calculations.py": {
+      "baseline_sha256": "6aff97cf60e81427ca0305435c7cdbba694c463da3dbad5dd5347d2e84c649f7",
+      "current_sha256": "0a631ac41f9ca81b774815ea13d207fe137f96e72b6cf77be995009a3489fca9"
+    },
+    "tests/test_compose_architecture.py": {
+      "baseline_sha256": "705ef6b4e7233d6052e80c976de17b3c91babc1c9c23a9707023bd7a6fa730e0",
+      "current_sha256": "c44972270cc0f4a0caef78117ec732d42fe5b71b741e23421fc3246ecd7cb816"
+    },
+    "tests/test_feedback.py": {
+      "baseline_sha256": "ec309c0a2b21149446f779ef0855858ae552fca8794a248323c10ff231c1722d",
+      "current_sha256": "98c01ecc35e515d29db599d6addc470b776db915a1f80006f6d84974499204d1"
+    },
+    "tests/test_guardrails.py": {
+      "baseline_sha256": "72f282e3a5e039b1bdf1295d0f09e2f5baa1613b6aad282c5a5a09c54084eecb",
+      "current_sha256": "849cb194c189485045c6f8c2eae614e30d393ba5b9f5eec0bfc39d552af5cdf5"
+    },
+    "tests/test_query_guard.py": {
+      "baseline_sha256": "1c79cb88b13fd21e39af86f0231498044738226058018c57c5dbe2f2ab17cc0f",
+      "current_sha256": "a6617ba91227705aa8245e1495e2270be7e28646cfe1660fc36e2ba13bf1a0dc"
+    },
+    "tests/test_sql_review.py": {
+      "baseline_sha256": "0a4efe2d683764dd1d92bafa025977c65c11b695845bd361ddac396a0ca8aa2d",
+      "current_sha256": "455e5086af81e09d59b754222dfb61ddb6b6cb8ed63afc36a141abc00fd08058"
+    }
+  }
+}

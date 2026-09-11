@@ -3,13 +3,14 @@
 omlx_client.py existed but had no caller, so validate_output, the CreditResponse contract
 and the abstention logic were never exercised end to end.
 """
+
 import subprocess
 import sys
 import unittest
 from datetime import date
 from pathlib import Path
 
-from fastapi.testclient import TestClient
+from http_helpers import TestClient, execute_reviewed
 
 from credit_risk import api, data_service
 from credit_risk.rag.filters import RetrievalPolicy
@@ -20,7 +21,6 @@ from credit_risk.risk_tiers import classify, gate
 from credit_risk.schemas import (
     AnswerStatus,
     CreditResponse,
-    InferenceClaim,
     Jurisdiction,
     Portfolio,
     QueryPlan,
@@ -34,40 +34,55 @@ POLICY = ROOT / "configs" / "retrieval.yaml"
 
 def ensure_fixture() -> None:
     if not FIXTURE.is_file():
-        subprocess.run([sys.executable, str(ROOT / "scripts" / "make_fixture.py")],
-                       cwd=ROOT, check=True, capture_output=True)
+        subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "make_fixture.py")],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+        )
 
 
 def plan(**overrides) -> QueryPlan:
-    base = dict(
-        portfolio=Portfolio.CORPORATE, jurisdiction=Jurisdiction.SAMA,
-        obligor_id="OBL-0008", date_from=date(2025, 1, 31), date_to=date(2025, 12, 31),
-        as_of_date=date(2026, 1, 15), metrics=["current_ratio", "dscr", "pit_pd", "stage"],
-    )
+    base = {
+        "portfolio": Portfolio.CORPORATE,
+        "jurisdiction": Jurisdiction.SAMA,
+        "obligor_id": "OBL-0008",
+        "date_from": date(2025, 1, 31),
+        "date_to": date(2025, 12, 31),
+        "as_of_date": date(2026, 1, 15),
+        "metrics": ["current_ratio", "dscr", "pit_pd", "stage"],
+    }
     base.update(overrides)
     return QueryPlan(**base)
 
 
 def sama_chunk() -> PolicyChunk:
     return PolicyChunk(
-        chunk_id="s1", jurisdiction=Jurisdiction.SAMA, document_id="SAMA-DOC-4",
-        document_version="1.0", section_id="7.2", approval_status="approved",
+        chunk_id="s1",
+        jurisdiction=Jurisdiction.SAMA,
+        document_id="SAMA-DOC-4",
+        document_version="1.0",
+        section_id="7.2",
+        approval_status="approved",
         confidentiality_level="internal",
         text="A significant increase in credit risk requires stage 2 classification.",
     )
 
 
 def response(**overrides) -> CreditResponse:
-    base = dict(
-        answer_status=AnswerStatus.ANSWERED,
-        executive_summary="Leverage has risen and utilisation is elevated.",
-        facts=[SupportedClaim(statement="Stage 2 applies on SICR.",
-                              evidence_ids=["SAMA-DOC-4#7.2"])],
-        inferences=[InferenceClaim(statement="Deterioration is likely to continue.",
-                                   basis="utilisation trend", confidence=0.6)],
-        recommendation="",
-        human_approval_required=True,
-    )
+    base = {
+        "answer_status": AnswerStatus.ANSWERED,
+        "executive_summary": "A significant increase in credit risk requires stage 2 classification.",
+        "facts": [
+            SupportedClaim(
+                statement="A significant increase in credit risk requires stage 2 classification.",
+                evidence_ids=["SAMA-DOC-4@1.0#7.2"],
+            )
+        ],
+        "inferences": [],
+        "recommendation": "",
+        "human_approval_required": True,
+    }
     base.update(overrides)
     return CreditResponse(**base)
 
@@ -99,10 +114,9 @@ class AnalyseRouteTests(unittest.TestCase):
             saved = data_service.settings.service_role
             data_service.settings.service_role = "data_service"
             try:
-                return ds_client.post(
-                    "/internal/v1/query/execute",
-                    headers={"x-service-token": data_service.settings.service_token},
-                    json=request.query_plan.model_dump(mode="json")).json()
+                return execute_reviewed(
+                    ds_client, request.query_plan.model_dump(mode="json")
+                ).json()
             finally:
                 data_service.settings.service_role = saved
 
@@ -122,8 +136,10 @@ class AnalyseRouteTests(unittest.TestCase):
         api.retriever = self._retriever
 
     def post(self, **overrides):
-        body = {"user_text": "significant increase in credit risk",
-                "query_plan": plan().model_dump(mode="json")}
+        body = {
+            "user_text": "significant increase in credit risk",
+            "query_plan": plan().model_dump(mode="json"),
+        }
         body.update(overrides)
         return self.client.post("/v1/analyse", json=body)
 
@@ -145,9 +161,15 @@ class AnalyseRouteTests(unittest.TestCase):
         self.assertNotIn("rows", stub.seen["factsheet"])
 
     def test_uncited_claim_is_blocked_even_though_the_model_answered(self) -> None:
-        api.model_client = StubModel(response(
-            facts=[SupportedClaim(statement="SICR threshold is 30 days.",
-                                  evidence_ids=["SAMA-DOC-99#1.1"])]))
+        api.model_client = StubModel(
+            response(
+                facts=[
+                    SupportedClaim(
+                        statement="SICR threshold is 30 days.", evidence_ids=["SAMA-DOC-99#1.1"]
+                    )
+                ]
+            )
+        )
         body = self.post().json()
         self.assertFalse(body["output_guardrail"]["passed"])
         self.assertFalse(body["action_control"]["released"])
@@ -171,58 +193,86 @@ class AnalyseRouteTests(unittest.TestCase):
     def test_unknown_role_cannot_retrieve(self) -> None:
         api.model_client = StubModel()
         r = self.post(reviewer_role="intern")
-        self.assertEqual(r.status_code, 403)
+        self.assertEqual(r.status_code, 422)
 
 
 class ActionControlTests(unittest.TestCase):
     def test_autonomous_decision_language_is_prohibited(self) -> None:
         tier, reasons = classify(
             response(recommendation="We hereby approve the facility at the requested limit."),
-            "credit_deterioration")
+            "credit_deterioration",
+        )
         self.assertEqual(tier, "prohibited")
         self.assertTrue(any("prohibited_action" in r for r in reasons))
-        self.assertEqual(gate(response(
-            recommendation="We hereby approve the facility."), "credit_deterioration"
-        )["release"], "blocked")
+        self.assertEqual(
+            gate(
+                response(recommendation="We hereby approve the facility."), "credit_deterioration"
+            )["release"],
+            "blocked",
+        )
 
     def test_staging_conclusions_need_senior_approval(self) -> None:
         tier, _ = classify(
             response(executive_summary="We recommend stage migration to stage 3."),
-            "credit_deterioration")
+            "credit_deterioration",
+        )
         self.assertEqual(tier, "high")
-        self.assertEqual(gate(response(
-            executive_summary="Recommend stage migration."), "credit_deterioration"
-        )["release"], "senior_credit_approval_required")
+        self.assertEqual(
+            gate(response(executive_summary="Recommend stage migration."), "credit_deterioration")[
+                "release"
+            ],
+            "senior_credit_approval_required",
+        )
 
     def test_a_plain_factsheet_can_release_automatically(self) -> None:
         # No recommendation and no material conclusion. Note the default fixture mentions
         # SICR, which correctly forces high tier, so this case states its own facts.
-        control = gate(response(
-            executive_summary="Utilisation rose from 62% to 80% over twelve months.",
-            facts=[SupportedClaim(statement="Utilisation is 80%.",
-                                  evidence_ids=["SAMA-DOC-4#7.2"])],
-            inferences=[], recommendation="", human_approval_required=False), "factsheet")
+        control = gate(
+            response(
+                executive_summary="Utilisation rose from 62% to 80% over twelve months.",
+                facts=[
+                    SupportedClaim(
+                        statement="Utilisation is 80%.", evidence_ids=["SAMA-DOC-4@1.0#7.2"]
+                    )
+                ],
+                inferences=[],
+                recommendation="",
+                human_approval_required=False,
+            ),
+            "factsheet",
+        )
         self.assertEqual(control["risk_tier"], "low")
         self.assertTrue(control["released"])
 
     def test_any_recommendation_lifts_a_low_tier_output(self) -> None:
-        control = gate(response(
-            executive_summary="Utilisation rose over twelve months.",
-            facts=[SupportedClaim(statement="Utilisation is 80%.",
-                                  evidence_ids=["SAMA-DOC-4#7.2"])],
-            inferences=[], recommendation="Increase monitoring frequency.",
-            human_approval_required=False), "factsheet")
+        control = gate(
+            response(
+                executive_summary="Utilisation rose over twelve months.",
+                facts=[
+                    SupportedClaim(
+                        statement="Utilisation is 80%.", evidence_ids=["SAMA-DOC-4@1.0#7.2"]
+                    )
+                ],
+                inferences=[],
+                recommendation="Increase monitoring frequency.",
+                human_approval_required=False,
+            ),
+            "factsheet",
+        )
         self.assertEqual(control["risk_tier"], "medium")
         self.assertFalse(control["released"])
 
     def test_mentioning_sicr_anywhere_forces_senior_approval(self) -> None:
         # The default fixture cites a SICR clause, which is exactly the kind of material
         # conclusion a human must own.
-        self.assertEqual(classify(response(), "credit_deterioration")[0], "high")
+        self.assertEqual(
+            classify(response(executive_summary="SICR observed"), "credit_deterioration")[0], "high"
+        )
 
     def test_escalation_requested_by_the_model_is_honoured(self) -> None:
         tier, reasons = classify(
-            response(answer_status=AnswerStatus.ESCALATE), "credit_deterioration")
+            response(answer_status=AnswerStatus.ESCALATE), "credit_deterioration"
+        )
         self.assertEqual(tier, "high")
         self.assertIn("model_requested_escalation", reasons)
 

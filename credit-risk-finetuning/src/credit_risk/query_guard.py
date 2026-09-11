@@ -16,10 +16,11 @@ class QueryGuardError(ValueError):
 
 _SYMBOL_OPERATORS = ("<=", ">=", "<>", "!=", "=", "<", ">")
 _WORD_OPERATORS = ("BETWEEN", "LIKE", "ILIKE", "IN", "OR", "AND", "NOT")
-_OPERATOR_PATTERN = re.compile("|".join(
-    list(_SYMBOL_OPERATORS)
-    + ["(?<![A-Z_])" + word + "(?![A-Z_])" for word in _WORD_OPERATORS]
-))
+_OPERATOR_PATTERN = re.compile(
+    "|".join(
+        list(_SYMBOL_OPERATORS) + ["(?<![A-Z_])" + word + "(?![A-Z_])" for word in _WORD_OPERATORS]
+    )
+)
 
 
 @dataclass(frozen=True)
@@ -46,6 +47,14 @@ class SchemaRegistry:
             self.data = yaml.safe_load(handle)
         if self.data.get("default_deny") is not True:
             raise QueryGuardError("Schema registry must be default-deny")
+        from credit_risk.calculations import CALCULATORS
+
+        for metric, definition in self.data.get("metrics", {}).items():
+            formula = definition.get("formula_id")
+            if formula and (
+                metric not in CALCULATORS or CALCULATORS[metric]({}).formula_id != formula
+            ):
+                raise QueryGuardError("Unknown governed calculation: " + metric)
         if expected_version and str(self.data.get("version")) != expected_version:
             raise QueryGuardError(
                 f"Schema registry version {self.data.get('version')!r} does not match "
@@ -110,9 +119,11 @@ class GuardedQueryCompiler:
         if len(plan.metrics) > controls["maximum_metrics"]:
             raise QueryGuardError("Too many requested metrics")
 
-        month_span = (plan.date_to.year - plan.date_from.year) * 12 + (
-            plan.date_to.month - plan.date_from.month
-        ) + 1
+        month_span = (
+            (plan.date_to.year - plan.date_from.year) * 12
+            + (plan.date_to.month - plan.date_from.month)
+            + 1
+        )
         if month_span > controls["maximum_months"]:
             raise QueryGuardError("Requested date range exceeds the maximum history")
 
@@ -120,8 +131,7 @@ class GuardedQueryCompiler:
         # aggregates it. Facility-grain cohorts would double-count borrowers with several
         # facilities, which is exactly the grain mismatch the plans call out.
         table_name = (
-            "facility_monthly" if plan.entity_level == EntityLevel.FACILITY
-            else "obligor_monthly"
+            "facility_monthly" if plan.entity_level == EntityLevel.FACILITY else "obligor_monthly"
         )
         if table_name not in controls["allowed_tables"]:
             raise QueryGuardError(f"Table is not allowlisted: {table_name}")
@@ -129,6 +139,8 @@ class GuardedQueryCompiler:
         table = self.registry.data["tables"][table_name]
         allowed_columns = table["allowed_columns"]
         grain = table["grain"]
+        if plan.portfolio.value not in table.get("portfolios", []):
+            raise QueryGuardError("Table portfolio not approved")
 
         pit = self.registry.data["point_in_time"]
         cutoff_column = pit["data_cutoff_column"]
@@ -167,14 +179,12 @@ class GuardedQueryCompiler:
                 )
             for dimension in plan.group_by:
                 if dimension not in allowed_group_by:
-                    raise QueryGuardError(
-                        f"Cohort dimension is not allowlisted: {dimension}")
+                    raise QueryGuardError(f"Cohort dimension is not allowlisted: {dimension}")
                 if allowed_columns.get(dimension, {}).get("sensitivity") == "restricted":
                     # Belt and braces: the allowlist above already excludes identifiers,
                     # but grouping on a restricted column is a per-entity extract however
                     # it got into the list.
-                    raise QueryGuardError(
-                        f"Cohort dimension is a restricted column: {dimension}")
+                    raise QueryGuardError(f"Cohort dimension is a restricted column: {dimension}")
                 source_columns.add(dimension)
             # portfolio and jurisdiction are always grouped, so every returned row carries
             # them and the consistency checks in the data service still have something to
@@ -213,12 +223,10 @@ class GuardedQueryCompiler:
                 )
             column = config.get("source_column")
             if not column:
-                raise QueryGuardError(
-                    f"Metric {metric} has no stored column to aggregate")
+                raise QueryGuardError(f"Metric {metric} has no stored column to aggregate")
             aggregation = plan.cohort_aggregation.lower()
             if aggregation not in allowed_aggregations:
-                raise QueryGuardError(
-                    f"Aggregation is not allowlisted: {aggregation}")
+                raise QueryGuardError(f"Aggregation is not allowlisted: {aggregation}")
             column_type = allowed_columns.get(column, {}).get("type")
             if aggregation in ("sum", "avg") and column_type not in aggregatable_types:
                 raise QueryGuardError(
@@ -241,10 +249,12 @@ class GuardedQueryCompiler:
         if unknown:
             raise QueryGuardError(f"Schema registry is missing approved columns: {sorted(unknown)}")
 
-        predicates = ['"portfolio" = ?', '"jurisdiction" = ?',
-                      '"observation_date" BETWEEN ? AND ?']
+        predicates = ['"portfolio" = ?', '"jurisdiction" = ?', '"observation_date" BETWEEN ? AND ?']
         parameters: list[Any] = [
-            plan.portfolio.value, plan.jurisdiction.value, plan.date_from, plan.date_to,
+            plan.portfolio.value,
+            plan.jurisdiction.value,
+            plan.date_from,
+            plan.date_to,
         ]
         filters = [
             f"portfolio = {plan.portfolio.value}",
@@ -293,14 +303,14 @@ class GuardedQueryCompiler:
             projection.append(f"{cohort_count} AS cohort_size")
             for metric, expression in sorted(aggregations.items()):
                 function, _, column = expression.partition("(")
-                projection.append(
-                    f'{function.upper()}("{column.rstrip(")")}") AS "{metric}"')
+                projection.append(f'{function.upper()}("{column.rstrip(")")}") AS "{metric}"')
             ordered = [*group_by, "cohort_size", *sorted(aggregations)]
             grouped = ", ".join(f'"{column}"' for column in group_by)
             # Order on a dimension that actually varies. portfolio and jurisdiction are
             # constant within a cohort result, so ordering on them is no ordering at all.
             order_column = (
-                "observation_date" if "observation_date" in plan.group_by
+                "observation_date"
+                if "observation_date" in plan.group_by
                 else (plan.group_by[0] if plan.group_by else group_by[0])
             )
             sql = (

@@ -1,0 +1,138 @@
+name: credit-risk-finetuning
+
+x-service-hardening: &service-hardening
+  read_only: true
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  init: true
+  restart: unless-stopped
+  tmpfs:
+    - /tmp:size=256m,mode=1777
+
+x-common-environment: &common-environment
+  CR_SCHEMA_REGISTRY: /app/configs/schema_registry.yaml
+  CR_SCHEMA_REGISTRY_VERSION: "1.0.0"
+  CR_ARCHITECTURE_POLICY: /app/configs/architecture_policy.yaml
+  CR_ARCHITECTURE_POLICY_VERSION: "1.0.0"
+  CR_SERVICE_TOKEN: ${CR_SERVICE_TOKEN:-local-dev-only-change-me}
+
+services:
+  api:
+    <<: *service-hardening
+    build:
+      context: .
+    command: ["uvicorn", "credit_risk.api:app", "--host", "0.0.0.0", "--port", "8080"]
+    environment:
+      <<: *common-environment
+      CR_SERVICE_ROLE: api_gateway
+      CR_DATA_SERVICE_URL: http://data-service:8081
+      CR_OMLX_BASE_URL: http://host.docker.internal:8000/v1
+      CR_QDRANT_URL: http://qdrant:6333
+    ports:
+      - "127.0.0.1:8080:8080"
+    networks:
+      - edge
+      - restricted-data
+    depends_on:
+      data-service:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  data-service:
+    <<: *service-hardening
+    build:
+      context: .
+    command: ["uvicorn", "credit_risk.data_service:app", "--host", "0.0.0.0", "--port", "8081"]
+    environment:
+      <<: *common-environment
+      CR_SERVICE_ROLE: data_service
+      CR_DATABASE_PATH: /data/credit_risk.duckdb
+      CR_MAX_RESULT_ROWS: "120"
+      CR_QUERY_TIMEOUT_SECONDS: "15"
+    expose:
+      - "8081"
+    volumes:
+      - ./data/curated:/data:ro
+    networks:
+      - restricted-data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/internal/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  qdrant:
+    image: qdrant/qdrant:v1.13.2
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "127.0.0.1:6333:6333"
+    volumes:
+      - qdrant-data:/qdrant/storage
+    networks:
+      - restricted-data
+
+  feedback-worker:
+    <<: *service-hardening
+    profiles: ["batch"]
+    build:
+      context: .
+    command:
+      - python
+      - -m
+      - credit_risk.feedback
+      - /feedback/feedback.jsonl
+      - /training/feedback_batch.jsonl
+    environment:
+      <<: *common-environment
+      CR_SERVICE_ROLE: feedback_worker
+    volumes:
+      - ./data/feedback:/feedback:ro
+      - ./data/training:/training:rw
+    networks:
+      - batch-only
+    restart: "no"
+
+  tests:
+    build:
+      context: .
+    profiles: ["test"]
+    command: ["python", "-m", "unittest", "discover", "-s", "tests", "-v"]
+    environment:
+      <<: *common-environment
+      CR_SERVICE_ROLE: api_gateway
+    volumes:
+      - ./tests:/app/tests:ro
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    networks:
+      - test-only
+    restart: "no"
+
+networks:
+  edge: {}
+  restricted-data:
+    internal: true
+  batch-only:
+    internal: true
+  test-only:
+    internal: true
+
+volumes:
+  qdrant-data: {}
+
+

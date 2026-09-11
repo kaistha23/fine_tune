@@ -13,3 +13,8 @@ models
 adapters
 outputs
 *.zip
+
+.env
+.env.*
+.reviewer-token
+data/audit

@@ -3,6 +3,7 @@
 The model may recommend or draft. It must never execute a material credit decision, and
 some requests it must not answer at all.
 """
+
 from __future__ import annotations
 
 from typing import Literal
@@ -22,16 +23,27 @@ ANALYSIS_TIERS: dict[str, Tier] = {
 
 # Language that indicates the model has crossed from advising into deciding.
 PROHIBITED_ACTIONS = (
-    "approve the facility", "decline the application", "approved the loan",
-    "we hereby approve", "final credit decision", "override the model",
-    "waive the covenant", "amend the policy",
+    "approve the facility",
+    "decline the application",
+    "approved the loan",
+    "we hereby approve",
+    "final credit decision",
+    "override the model",
+    "waive the covenant",
+    "amend the policy",
 )
 
 # Conclusions a human must own even when correctly reasoned.
 HIGH_TIER_MARKERS = (
-    "rating recommendation", "recommend downgrade", "recommend upgrade",
-    "sicr", "stage migration", "reclassify to stage", "limit increase",
-    "covenant breach", "write-off",
+    "rating recommendation",
+    "recommend downgrade",
+    "recommend upgrade",
+    "sicr",
+    "stage migration",
+    "reclassify to stage",
+    "limit increase",
+    "covenant breach",
+    "write-off",
 )
 
 RELEASE = {
@@ -47,11 +59,17 @@ def classify(response: CreditResponse, analysis_type: str) -> tuple[Tier, list[s
     reasons: list[str] = []
     tier: Tier = ANALYSIS_TIERS.get(analysis_type, "medium")
 
-    body = " ".join([
-        response.executive_summary, response.recommendation,
-        *[claim.statement for claim in response.facts],
-        *[claim.statement for claim in response.inferences],
-    ]).lower()
+    body = " ".join(
+        [
+            response.executive_summary,
+            response.recommendation,
+            *response.risk_drivers,
+            *response.mitigants,
+            *response.missing_information,
+            *[claim.statement for claim in response.facts],
+            *[claim.statement for claim in response.inferences],
+        ]
+    ).lower()
 
     for phrase in PROHIBITED_ACTIONS:
         if phrase in body:
@@ -79,5 +97,5 @@ def gate(response: CreditResponse, analysis_type: str) -> dict:
         "reasons": reasons,
         # A recommendation always needs a named human, whatever the tier.
         "human_approval_required": tier != "low" or response.human_approval_required,
-        "released": tier == "low",
+        "released": tier == "low" and not response.human_approval_required,
     }
