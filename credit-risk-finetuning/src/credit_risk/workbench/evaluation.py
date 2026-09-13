@@ -15,6 +15,7 @@ from credit_risk.schemas import CreditResponse, Evidence, QueryPlan
 
 MIN_REPORTABLE_SLICE = 10
 BOOTSTRAP_SAMPLES = 1000
+EVALUATOR_VERSION = "field-checks-v2"
 
 
 def check_schema(schema):
@@ -335,13 +336,13 @@ def calibration_summary(rows):
     }
 
 
-def evaluate(cases, provider, version, identity, query_checker=None):
+def evaluate(cases, provider, version, identity, query_checker=None, progress=None):
     """Provider is called three times per case. Mocking it tests plumbing, not model accuracy."""
     rows = []
     projections = {}
     equivalent = {}
     failed_fields = []
-    for case in cases:
+    for case_number, case in enumerate(cases, start=1):
         attempts = []
         keys = []
         for repeat in range(3):
@@ -397,6 +398,8 @@ def evaluate(cases, provider, version, identity, query_checker=None):
                 "calibration": first["calibration"],
             }
         )
+        if progress:
+            progress(case_number, len(cases))
     for family in equivalent.values():
         members = family["members"]
         if len(members) > 1:
@@ -447,7 +450,7 @@ def evaluate(cases, provider, version, identity, query_checker=None):
     return {
         "identity": identity,
         "release_evaluation": serializable(release),
-        "evaluator_version": "field-checks-v2",
+        "evaluator_version": EVALUATOR_VERSION,
         "case_set_hash": digest([c.model_dump() for c in cases]),
         "splits": {
             s: aggregate([r for r in rows if r["split"] == s])

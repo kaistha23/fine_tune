@@ -1,5 +1,6 @@
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -549,6 +550,183 @@ def test_job_detail_reports_progress_and_downloads_full_log(tmp_path, monkeypatc
     download = client.get(f"/api/jobs/{identity}/log")
     assert download.text == "complete local log\n"
     assert f'filename="{identity}.log"' in download.headers["content-disposition"]
+
+
+def test_one_click_comparison_queues_matching_base_and_candidate(tmp_path, monkeypatch):
+    from credit_risk.workbench import server
+    from credit_risk.workbench.evaluation import EVALUATOR_VERSION
+
+    monkeypatch.setattr(server, "PROJECT", tmp_path)
+    model = {"id": "base-revision", "path": str(tmp_path / "model"), "label": "Fixture base"}
+    monkeypatch.setattr(server, "model_catalog", lambda: [model])
+    app = create_app(tmp_path / "workspace", False)
+    client = TestClient(app)
+    client.headers["X-Workbench-Token"] = client.get("/api/session").json()["token"]
+    store = app.state.store
+    version = store.get("version", store.active_version("credit_analysis"))
+    cases = [
+        case(case_id="v", group_id="vg", split="validation"),
+        case(case_id="t", group_id="tg", split="test", question="test question"),
+        case(
+            case_id="o",
+            group_id="og",
+            split="oot",
+            question="oot question",
+            as_of_date="2026-01-01",
+        ),
+    ]
+    dataset = inspect_dataset(manifest(tmp_path / "dataset", cases))
+    dataset = store.add("dataset", dataset, dataset["hash"])
+    training_id = "completed-training"
+    output = tmp_path / "workspace/runs" / training_id
+    output.mkdir(parents=True)
+    adapter = tmp_path / "adapters/candidates/credit_analysis" / training_id
+    adapter.mkdir(parents=True)
+    best = b"verified-best"
+    final = b"verified-final"
+    (adapter / "adapter_config.json").write_text("{}")
+    (adapter / "best_adapters.safetensors").write_bytes(best)
+    (adapter / "adapters.safetensors").write_bytes(final)
+    (adapter / "completion.json").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "best_optimizer_updates": 1,
+                "checkpoint_sha256": hashlib.sha256(best).hexdigest(),
+                "final_checkpoint_sha256": hashlib.sha256(final).hexdigest(),
+            }
+        )
+    )
+    training = store.add(
+        "job",
+        {
+            "status": "completed",
+            "spec": {
+                "kind": "train",
+                "task": "credit_analysis",
+                "dataset": dataset,
+                "model": model,
+                "version": version,
+                "config": Config().model_dump(),
+                "output": str(output),
+            },
+        },
+        training_id,
+    )
+    request = {
+        "training_job_id": training["id"],
+        "checkpoint": "best",
+        "splits": ["validation", "test", "oot"],
+        "generation_profile": "deterministic",
+    }
+    created = client.post("/api/comparison-runs", json=request)
+    assert created.status_code == 200, created.text
+    payload = created.json()
+    base = store.get("job", payload["base_evaluation_job_id"])
+    candidate = store.get("job", payload["candidate_evaluation_job_id"])
+    assert "adapter_path" not in base["spec"]
+    assert candidate["spec"]["adapter_job_id"] == training_id
+    assert candidate["spec"]["checkpoint_sha256"] == hashlib.sha256(best).hexdigest()
+    for key in (
+        "dataset_manifest",
+        "case_set_hash",
+        "model_revision",
+        "prompt_hash",
+        "schema_hash",
+        "generation_hash",
+        "evaluator_version",
+    ):
+        assert base["spec"]["comparison_compatibility"][key] == candidate["spec"][
+            "comparison_compatibility"
+        ][key]
+    assert base["spec"]["comparison_compatibility"]["evaluator_version"] == EVALUATOR_VERSION
+    assert client.post("/api/comparison-runs", json=request).status_code == 422
+    queued = client.get("/api/comparison-runs/" + payload["comparison_id"]).json()
+    assert queued["status"] == "queued"
+    assert queued["base"]["progress"] == {"current_cases": 0, "total_cases": 3, "percent": 0.0}
+
+
+def test_completed_pair_returns_automatic_comparison(tmp_path, monkeypatch):
+    from credit_risk.workbench import server
+
+    monkeypatch.setattr(server, "PROJECT", tmp_path)
+    model = {"id": "base-revision", "path": str(tmp_path / "model"), "label": "Fixture base"}
+    monkeypatch.setattr(server, "model_catalog", lambda: [model])
+    app = create_app(tmp_path / "workspace", False)
+    client = TestClient(app)
+    client.headers["X-Workbench-Token"] = client.get("/api/session").json()["token"]
+    store = app.state.store
+    version = store.get("version", store.active_version("credit_analysis"))
+    cases = [case(case_id="v", group_id="vg", split="validation")]
+    dataset = inspect_dataset(manifest(tmp_path / "dataset", cases))
+    dataset = store.add("dataset", dataset, dataset["hash"])
+    training_id = "training-for-comparison"
+    output = tmp_path / "workspace/runs" / training_id
+    output.mkdir(parents=True)
+    adapter = tmp_path / "adapters/candidates/credit_analysis" / training_id
+    adapter.mkdir(parents=True)
+    weights = b"best"
+    (adapter / "adapter_config.json").write_text("{}")
+    (adapter / "best_adapters.safetensors").write_bytes(weights)
+    (adapter / "adapters.safetensors").write_bytes(b"final")
+    (adapter / "completion.json").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "best_optimizer_updates": 1,
+                "checkpoint_sha256": hashlib.sha256(weights).hexdigest(),
+                "final_checkpoint_sha256": hashlib.sha256(b"final").hexdigest(),
+            }
+        )
+    )
+    store.add(
+        "job",
+        {
+            "status": "completed",
+            "spec": {
+                "kind": "train",
+                "task": "credit_analysis",
+                "dataset": dataset,
+                "model": model,
+                "version": version,
+                "config": Config().model_dump(),
+                "output": str(output),
+            },
+        },
+        training_id,
+    )
+    pair = client.post(
+        "/api/comparison-runs",
+        json={"training_job_id": training_id, "splits": ["validation"]},
+    ).json()
+    report = {
+        "evaluator_version": "field-checks-v2",
+        "case_set_hash": store.get("comparison", pair["comparison_id"])["compatibility"][
+            "case_set_hash"
+        ],
+        "identity": {"version_id": version["id"], "generation": {"profile": "same"}},
+        "splits": {
+            "validation": {
+                "json_validity": {
+                    "value": 1.0,
+                    "denominator": 1,
+                    "ci95": [1.0, 1.0],
+                    "sufficient_sample": False,
+                }
+            }
+        },
+        "cases": [],
+    }
+    for key in ("base_evaluation_job_id", "candidate_evaluation_job_id"):
+        job_id = pair[key]
+        run = store.get("job", job_id)
+        Path(run["spec"]["output"]).joinpath("result.json").write_text(json.dumps(report))
+        store.update_job(job_id, status="completed")
+    result = client.get("/api/comparison-runs/" + pair["comparison_id"])
+    assert result.status_code == 200, result.text
+    assert result.json()["status"] == "completed"
+    card = result.json()["metrics"]["scorecards"]["validation"]["json_validity"]
+    assert card == {"base": 1.0, "candidate": 1.0, "delta": 0.0, "denominator": 1}
 
 
 def test_fuse_selects_best_checkpoint_and_records_hash(tmp_path, monkeypatch):

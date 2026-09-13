@@ -3,7 +3,7 @@
 ## Context
 
 The audit's pitfalls were mostly fixed in the current working tree on
-`data_prep_code_updates` (uncommitted). Verified on that tree: **418 passed, 35 skipped,
+`data_prep_code_updates`. Verified on that tree: **425 passed, 35 skipped,
 `ruff check .` clean**, CI and pre-commit added. What is still missing is on the **data**
 side: the model is trained and gated on 8 gold cases, thresholds live only in policy prose,
 numbers carry no units, nothing detects template clones, and data-generation code is spread

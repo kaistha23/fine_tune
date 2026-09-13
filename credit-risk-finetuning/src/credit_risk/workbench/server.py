@@ -8,8 +8,10 @@ import json
 import secrets
 import shutil
 from contextlib import asynccontextmanager
+from copy import deepcopy
 from pathlib import Path
 from typing import Literal
+from uuid import uuid4
 
 import yaml
 from fastapi import FastAPI, Request
@@ -18,7 +20,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from credit_risk.schemas import compact_json_schema
 from credit_risk.workbench.contracts import Case, default_version, inspect_dataset
-from credit_risk.workbench.evaluation import check_schema, compare
+from credit_risk.review_store import digest
+from credit_risk.workbench.evaluation import EVALUATOR_VERSION, check_schema, compare
 from credit_risk.workbench.feedback import batch_records, submit
 from credit_risk.workbench.jobs import Jobs
 from credit_risk.workbench.store import Store
@@ -93,6 +96,15 @@ class JobRequest(Strict):
         default_factory=lambda: ["validation", "test", "oot"]
     )
     config: Config = Field(default_factory=Config)
+
+
+class ComparisonRunRequest(Strict):
+    training_job_id: str = Field(min_length=1, max_length=128)
+    checkpoint: Literal["best", "final"] = "best"
+    generation_profile: Literal["deterministic", "serving"] = "deterministic"
+    splits: list[Literal["validation", "test", "oot"]] = Field(
+        default_factory=lambda: ["validation", "test", "oot"]
+    )
 
 
 def create_app(root=None, start_scheduler=True):
@@ -189,6 +201,7 @@ def create_app(root=None, start_scheduler=True):
             "answers": store.list("answer"),
             "feedback": store.list("feedback"),
             "regressions": store.list("regression"),
+            "comparisons": store.list("comparison"),
             "models": model_catalog(),
         }
 
@@ -317,6 +330,64 @@ def create_app(root=None, start_scheduler=True):
             },
         )
 
+    def generation_for(profile):
+        return (
+            {
+                "profile": "deterministic",
+                "temperature": 0,
+                "top_p": 0,
+                "top_k": 0,
+                "seed_sequence": [42, 43, 44],
+                "max_tokens": 1024,
+                "repeats": 3,
+                "enable_thinking": False,
+            }
+            if profile == "deterministic"
+            else {
+                "profile": "serving",
+                "temperature": 0.1,
+                "top_p": 0.9,
+                "top_k": 20,
+                "seed_sequence": [42, 43, 44],
+                "max_tokens": 1024,
+                "repeats": 3,
+                "enable_thinking": False,
+            }
+        )
+
+    def attach_checkpoint(spec, training_job, checkpoint):
+        adapter = PROJECT / "adapters/candidates" / training_job["spec"]["task"] / training_job["id"]
+        completion_file = adapter / "completion.json"
+        if not completion_file.is_file():
+            raise ValueError("Training run has no completion manifest")
+        completion = json.loads(completion_file.read_text())
+        if completion.get("status") not in ("completed", "early_stopped"):
+            raise ValueError("Training did not complete successfully")
+        name = "best_adapters.safetensors" if checkpoint == "best" else "adapters.safetensors"
+        hash_key = "checkpoint_sha256" if checkpoint == "best" else "final_checkpoint_sha256"
+        if checkpoint == "best" and not completion.get("best_optimizer_updates"):
+            raise ValueError("No verified best checkpoint improved over baseline; select final explicitly")
+        file = adapter / name
+        if not file.is_file() or not completion.get(hash_key):
+            raise ValueError("Requested checkpoint does not exist")
+        checkpoint_hash = hashlib.sha256(file.read_bytes()).hexdigest()
+        if checkpoint_hash != completion[hash_key]:
+            raise ValueError("Requested checkpoint differs from its completion manifest")
+        selected = Path(training_job["spec"]["output"]) / ("selected-" + checkpoint)
+        selected.mkdir(exist_ok=True)
+        selected_adapter = selected / "adapters.safetensors"
+        if not selected_adapter.exists():
+            shutil.copyfile(adapter / "adapter_config.json", selected / "adapter_config.json")
+            shutil.copyfile(file, selected_adapter)
+        if hashlib.sha256(selected_adapter.read_bytes()).hexdigest() != checkpoint_hash:
+            raise ValueError("Selected checkpoint copy changed")
+        spec.update(
+            adapter_path=str(selected),
+            checkpoint_sha256=checkpoint_hash,
+            adapter_job_id=training_job["id"],
+        )
+        return checkpoint_hash
+
     def spec_for(request):
         model = next((m for m in model_catalog() if m["id"] == request.model_id), None)
         if not model:
@@ -337,29 +408,7 @@ def create_app(root=None, start_scheduler=True):
             raise ValueError("Warm-up requires the cosine schedule")
         if config["batch_size"] * config["grad_accumulation_steps"] > 32:
             raise ValueError("Effective batch size is limited to 32 on this local profile")
-        generation = (
-            {
-                "profile": "deterministic",
-                "temperature": 0,
-                "top_p": 0,
-                "top_k": 0,
-                "seed_sequence": [42, 43, 44],
-                "max_tokens": 1024,
-                "repeats": 3,
-                "enable_thinking": False,
-            }
-            if request.generation_profile == "deterministic"
-            else {
-                "profile": "serving",
-                "temperature": 0.1,
-                "top_p": 0.9,
-                "top_k": 20,
-                "seed_sequence": [42, 43, 44],
-                "max_tokens": 1024,
-                "repeats": 3,
-                "enable_thinking": False,
-            }
-        )
+        generation = generation_for(request.generation_profile)
         spec = {
             "kind": request.kind,
             "task": request.task,
@@ -403,28 +452,104 @@ def create_app(root=None, start_scheduler=True):
                 raise ValueError("Select a completed training run for this task")
             if job["spec"]["model"]["id"] != model["id"]:
                 raise ValueError("Adapter base snapshot mismatch")
-            adapter = PROJECT / "adapters/candidates" / request.task / job["id"]
-            name = (
-                "best_adapters.safetensors"
-                if request.checkpoint == "best"
-                else "adapters.safetensors"
-            )
-            file = adapter / name
-            if not file.is_file():
-                raise ValueError("Requested checkpoint does not exist")
-            selected = Path(job["spec"]["output"]) / ("selected-" + request.checkpoint)
-            if not selected.exists():
-                selected.mkdir()
-                shutil.copyfile(adapter / "adapter_config.json", selected / "adapter_config.json")
-                shutil.copyfile(file, selected / "adapters.safetensors")
-            checkpoint_hash = hashlib.sha256(file.read_bytes()).hexdigest()
-            if (
-                hashlib.sha256((selected / "adapters.safetensors").read_bytes()).hexdigest()
-                != checkpoint_hash
-            ):
-                raise ValueError("Selected checkpoint copy changed")
-            spec.update(adapter_path=str(selected), checkpoint_sha256=checkpoint_hash)
+            attach_checkpoint(spec, job, request.checkpoint)
         return spec
+
+    @app.post("/api/comparison-runs")
+    def create_comparison(request: ComparisonRunRequest):
+        if not request.splits or len(set(request.splits)) != len(request.splits):
+            raise ValueError("Select one or more unique evaluation splits")
+        training = store.get("job", request.training_job_id)
+        if training["status"] != "completed" or training["spec"].get("kind") != "train":
+            raise ValueError("Select a completed training run")
+        frozen = training["spec"]
+        dataset = frozen.get("dataset")
+        if not dataset:
+            raise ValueError("Training run has no registered dataset")
+        current = inspect_dataset(dataset["path"])
+        if current["hash"] != dataset["hash"]:
+            raise ValueError("Registered dataset changed after training")
+        available = {m["id"]: m for m in model_catalog()}
+        if frozen["model"]["id"] not in available:
+            raise ValueError("Training base model is no longer cached")
+        model = available[frozen["model"]["id"]]
+        version = frozen["version"]
+        compatible(version)
+        selected_cases = [
+            Case.model_validate(case).model_dump()
+            for case in dataset["cases"]
+            if case["split"] in request.splits
+        ]
+        if not selected_cases:
+            raise ValueError("No cases in selected evaluation splits")
+        generation = generation_for(request.generation_profile)
+        comparison_id = uuid4().hex
+        compatibility = {
+            "dataset_manifest": dataset["hash"],
+            "case_set_hash": digest(selected_cases),
+            "model_revision": model["id"],
+            "prompt_hash": digest(version["prompt"]),
+            "schema_hash": digest(version["schema"]),
+            "generation_hash": digest(generation),
+            "evaluator_version": EVALUATOR_VERSION,
+        }
+        request_hash = digest(
+            {
+                "training_job_id": training["id"],
+                "checkpoint": request.checkpoint,
+                "splits": request.splits,
+                "generation": generation,
+                **compatibility,
+            }
+        )
+        active = {"queued", "running", "stopping"}
+        for existing in store.list("comparison"):
+            if existing["request_hash"] != request_hash:
+                continue
+            pair = [store.get("job", existing[key]) for key in ("base_job_id", "candidate_job_id")]
+            if any(job["status"] in active for job in pair):
+                raise ValueError("An identical comparison is already active")
+        common = {
+            "kind": "evaluate",
+            "task": frozen["task"],
+            "version": version,
+            "model": model,
+            "config": deepcopy(frozen["config"]),
+            "splits": request.splits,
+            "generation": generation,
+            "context_limit": max(4096, frozen["config"]["max_seq_length"]),
+            "dataset": dataset,
+            "comparison_id": comparison_id,
+            "source_training_job_id": training["id"],
+            "comparison_checkpoint": request.checkpoint,
+            "comparison_compatibility": compatibility,
+        }
+        candidate = deepcopy(common)
+        checkpoint_hash = attach_checkpoint(candidate, training, request.checkpoint)
+        common["comparison_checkpoint_sha256"] = checkpoint_hash
+        candidate["comparison_checkpoint_sha256"] = checkpoint_hash
+        base = jobs.enqueue({**common, "comparison_role": "base"})
+        candidate_job = jobs.enqueue({**candidate, "comparison_role": "candidate"})
+        comparison = store.add(
+            "comparison",
+            {
+                "training_job_id": training["id"],
+                "base_job_id": base["id"],
+                "candidate_job_id": candidate_job["id"],
+                "checkpoint": request.checkpoint,
+                "splits": request.splits,
+                "generation_profile": request.generation_profile,
+                "request_hash": request_hash,
+                "compatibility": compatibility,
+            },
+            comparison_id,
+        )
+        return {
+            "comparison_id": comparison["id"],
+            "base_evaluation_job_id": base["id"],
+            "candidate_evaluation_job_id": candidate_job["id"],
+            "status": "queued",
+        }
 
     @app.post("/api/preflight")
     def preflight(request: JobRequest):
@@ -484,6 +609,18 @@ def create_app(root=None, start_scheduler=True):
             current = current or 0
             if job["status"] == "completed" and total is not None:
                 current = total
+        else:
+            progress_file = output / "progress.json"
+            if progress_file.is_file():
+                evaluation_progress = json.loads(progress_file.read_text())
+                current = int(evaluation_progress["current_cases"])
+                total = int(evaluation_progress["total_cases"])
+            else:
+                cases = job["spec"].get("cases") or job["spec"].get("dataset", {}).get(
+                    "cases", []
+                )
+                total = sum(case.get("split") in job["spec"].get("splits", []) for case in cases)
+                current = total if job["status"] == "completed" else 0
         accumulation = int(job["spec"].get("config", {}).get("grad_accumulation_steps", 1))
         progress = {
             "current_micro_batches": current,
@@ -492,6 +629,12 @@ def create_app(root=None, start_scheduler=True):
             "total_optimizer_updates": total // accumulation if total is not None else None,
             "percent": round(100 * current / total, 1) if total else None,
         }
+        if job["spec"]["kind"] != "train":
+            progress = {
+                "current_cases": current,
+                "total_cases": total,
+                "percent": round(100 * current / total, 1) if total else None,
+            }
         return {
             "job": job,
             "result": result,
@@ -521,6 +664,38 @@ def create_app(root=None, start_scheduler=True):
         if not a or not b or "splits" not in a or "splits" not in b:
             raise ValueError("Two completed evaluations required")
         return {"mode": mode, "metrics": compare(a, b, mode)}
+
+    @app.get("/api/comparison-runs/{identity}")
+    def comparison_run(identity: str):
+        record = store.get("comparison", identity)
+        base = job_detail(record["base_job_id"])
+        candidate = job_detail(record["candidate_job_id"])
+        states = {base["job"]["status"], candidate["job"]["status"]}
+        terminal_failure = {"failed", "cancelled", "interrupted"}
+        if states & terminal_failure:
+            status = "failed"
+        elif states == {"completed"}:
+            status = "completed"
+        elif "running" in states or "stopping" in states:
+            status = "running"
+        else:
+            status = "queued"
+        metrics = None
+        compatibility_error = None
+        if status == "completed":
+            try:
+                metrics = compare(base["result"], candidate["result"], "model")
+            except (KeyError, TypeError, ValueError) as exc:
+                status = "incompatible"
+                compatibility_error = str(exc)
+        return {
+            "comparison": record,
+            "status": status,
+            "base": base,
+            "candidate": candidate,
+            "metrics": metrics,
+            "compatibility_error": compatibility_error,
+        }
 
     return app
 

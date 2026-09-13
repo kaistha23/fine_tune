@@ -301,12 +301,19 @@ def run(spec):
         "prompt_hash": digest(spec["version"]["prompt"]),
         "generation": spec["generation"],
     }
+
+    def record_progress(current, total):
+        temporary = output / "progress.json.tmp"
+        temporary.write_text(json.dumps({"current_cases": current, "total_cases": total}))
+        temporary.replace(output / "progress.json")
+
     result = evaluate(
         cases,
         provider,
         spec["version"],
         identity,
         query_checker(spec) if spec["task"] == "query_plan" else None,
+        record_progress,
     )
     store = Store(spec["workspace"])
     for case, row in zip(cases, result["cases"], strict=True):

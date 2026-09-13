@@ -125,6 +125,8 @@ Recommendations are deterministic checklist suggestions, **not an automatic diag
 - `POST /api/datasets {path}`: register a manifest.
 - `POST /api/preflight`, `POST /api/jobs`: task, kind (`train`, `evaluate`, `regression`), dataset/version/model IDs, checkpoint and allowed training settings.
 - `GET /api/jobs/{id}`, `POST /api/jobs/{id}/stop`: artifacts and explicit stop.
+- `POST /api/comparison-runs`: derive and queue a matched base/candidate evaluation pair from a completed training run.
+- `GET /api/comparison-runs/{id}`: paired status, per-case progress and automatic compatible scorecards.
 - `GET /api/compare/{left}/{right}?mode=model|prompt`: compatible result comparison.
 - `POST /api/answers`: import `{case, output, version_id, identity?, sql_lineage?}`. Imported answers are labeled as imported, not measured native runs.
 - `POST /api/feedback`: `{submission_id, interaction_id, comment?, correction?, cause?, expectations?}`. No approval fields.

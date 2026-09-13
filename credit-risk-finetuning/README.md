@@ -1,6 +1,6 @@
 # Fine-tuning workbench
 
-The recommended entry point is the **native local dashboard** at `http://127.0.0.1:8090`. It has Datasets, Runs, Evaluation, and Answers & feedback views. No manual login or reviewer token is required. Supply datasets in phase 2; registering data or submitting feedback never starts training.
+The recommended entry point is the **native local dashboard** at `http://127.0.0.1:8090`. It has Datasets, Runs, Evaluation, and Answers & feedback views. Evaluation lists completed training runs as candidates and can queue a matched base/candidate pair with one action; training losses remain diagnostics rather than scorecards. No manual login or reviewer token is required. Supply datasets in phase 2; registering data or submitting feedback never starts training.
 
 ```sh
 uv sync --frozen --extra dev --extra training --extra rag --extra documents --extra data

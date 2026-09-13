@@ -100,12 +100,14 @@ isolation, privacy-scan provenance for masked data, and OOT dates. Registration 
 2. Select **Train**, choose the bounded LoRA settings, and run **Preflight**.
 3. Review token lengths, assistant-mask boundaries, split availability, and configuration.
 4. Choose **Start job**. This is the action that starts native MLX training.
-5. After completion, select **Evaluate dataset**, the candidate adapter, the `best` checkpoint,
-   and validation/test/OOT splits. Use `final` only when intentionally evaluating a completed run
-   that produced no qualifying best checkpoint.
-6. Compare candidate and champion only on matching benchmark, prompt, evidence, generation, and
-   scoring versions. Promotion remains blocked until judge qualification, retrieval calibration,
-   required benchmark coverage, all release gates, and the declared target-metric improvement pass.
+5. After completion, open **Evaluation**, find the completed run under **Trained candidates**, keep
+   `Best validation`, and choose **Evaluate and compare**. The workbench queues the unchanged base
+   model and the trained adapter against the same validation/test/OOT cases. Select `Final` only
+   when intentionally evaluating a completed run with no qualifying best checkpoint.
+6. Follow both jobs under **Paired evaluations**. Scorecards appear automatically after both finish
+   and keep validation, test and OOT separate. Promotion remains blocked until judge qualification,
+   retrieval calibration, required benchmark coverage, all release gates, and the declared
+   target-metric improvement pass.
 
 Feedback-specific development regressions can be run separately with **Regression**. They help
 confirm a correction but do not count as independent release accuracy.
