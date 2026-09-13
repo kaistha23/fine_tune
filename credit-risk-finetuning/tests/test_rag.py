@@ -20,7 +20,7 @@ NAMESPACES = {"SAMA": "policy_sama", "CBUAE": "policy_cbuae"}
 
 def chunk(chunk_id: str, jurisdiction: Jurisdiction, text: str, **overrides) -> PolicyChunk:
     base = dict(
-        chunk_id=chunk_id, jurisdiction=jurisdiction,
+        chunk_id=chunk_id, section_key=chunk_id, jurisdiction=jurisdiction,
         document_id=f"{jurisdiction.value}-DOC-1", document_version="1.0",
         section_id="7.2", approval_status="approved",
         confidentiality_level="internal", text=text,

@@ -1,4 +1,7 @@
+import os
 from pathlib import Path
+
+from pydantic import model_validator
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -6,7 +9,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     database_path: Path = Path("data/curated/credit_risk.duckdb")
     schema_registry: Path = Path("configs/schema_registry.yaml")
-    schema_registry_version: str = "1.2.0"
+    schema_registry_version: str = "1.3.0"
     architecture_policy: Path = Path("configs/architecture_policy.yaml")
     architecture_policy_version: str = "1.2.0"
     retrieval_policy: Path = Path("configs/retrieval.yaml")
@@ -28,8 +31,17 @@ class Settings(BaseSettings):
     # in-memory index and every retrieval returned nothing. Empty means in-memory.
     qdrant_url: str = ""
     # Embeddings come from the native oMLX server: the API container has no Metal. Empty
-    # falls back to the hashing placeholder, which is not semantic.
+    # is rejected outside explicit offline tests.
     embedding_model: str = ""
+    embedding_revision: str = ""
+    offline_test_mode: bool = False
+    out_of_time_from: str = "2025-01-01"
+    judge_model: str = ""
+    # Explicit opt-in integration-test inputs; unknown CR_ keys still fail closed.
+    test_embedder: str = ""
+    test_omlx_embedder: str = ""
+    test_omlx_url: str = ""
+    test_qdrant_url: str = ""
     feedback_path: Path = Path("data/feedback/feedback.jsonl")
     # What the model was shown, kept so a correction can be rebuilt into a training
     # example. Holds factsheets, so it is obligor data at rest and inherits the same
@@ -43,7 +55,16 @@ class Settings(BaseSettings):
     max_context_tokens: int = 16_384  # read by the inference layer (phase 3)
     min_evidence_score: float = 0.72
 
-    model_config = SettingsConfigDict(env_prefix="CR_", env_file=".env", extra="ignore")
+    @model_validator(mode="before")
+    @classmethod
+    def reject_unknown_environment(cls, values):
+        known = {"CR_" + name.upper() for name in cls.model_fields}
+        unknown = sorted(k for k in os.environ if k.startswith("CR_") and k not in known)
+        if unknown:
+            raise ValueError("Unknown credit-risk settings: " + ", ".join(unknown))
+        return values
+
+    model_config = SettingsConfigDict(env_prefix="CR_", env_file=".env", extra="forbid")
 
 
 settings = Settings()

@@ -13,7 +13,7 @@ The following instructions describe the separate, existing SQL application. Its 
 
 ## Existing SQL application
 
-Python/uv development environment for synthetic or masked credit-risk factsheets, reviewed SQL, RAG, guardrails, evaluation, native MLX adapters and batch feedback. Advisory outputs require human review. Model promotion is disabled pending a reviewed benchmark and calibrated grounding/retrieval.
+Python/uv development environment for synthetic or masked credit-risk factsheets, reviewed SQL, RAG, guardrails, evaluation, native MLX adapters and batch feedback. Advisory outputs require human review. Model promotion remains blocked until a reviewed benchmark and independent grounding/retrieval qualification pass. See the [mitigation and qualification guide](docs/mitigation-and-qualification.md) for changed contracts, commands, and release requirements.
 
 The implementation and measured limits are recorded in [the validation report](docs/implementation-validation.md). The original 32-file handover is preserved separately in [the reference baseline](../references/handover-baseline).
 
@@ -30,7 +30,7 @@ docker compose up -d --build api data-service qdrant
 
 Open `http://127.0.0.1:8080/review`, enter the credential from `.reviewer-token`, prepare the example structured plan, inspect the masked SQL packet, approve, then execute. Submit changes through the structured plan correction action. Each correction requires a fresh approval; each approval allows one execution. Rejected, stale and replayed revisions fail closed. The page never executes edited SQL.
 
-MLX training and oMLX serving remain native on macOS. Docker contains the API, internal read-only data service and Qdrant. Only the data service mounts `data/curated`; audit databases have separate writable mounts. The API uses native oMLX at `host.docker.internal:9905`. Configure an actual embedding model through `CR_EMBEDDING_MODEL`; the default hashing embedder is a test placeholder, not semantic retrieval. SAMA and CBUAE are separate knowledge domains. Reindex existing documents after the versioned-ID/ACL change.
+MLX training and oMLX serving remain native on macOS. Docker contains the API, internal read-only data service and Qdrant. Only the data service mounts `data/curated`; audit databases have separate writable mounts. The API uses native oMLX at `host.docker.internal:9905`. Configure an actual embedding model through `CR_EMBEDDING_MODEL` and pin it with `CR_EMBEDDING_REVISION`; either value being unset prevents API startup. Hashing is restricted to explicit offline tests (`CR_OFFLINE_TEST_MODE=true`). SAMA and CBUAE are separate knowledge domains. Reindex existing documents after the versioned-ID/ACL change.
 
 ## Validate
 

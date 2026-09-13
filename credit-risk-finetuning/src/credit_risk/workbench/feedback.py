@@ -2,7 +2,7 @@
 
 from credit_risk.review_store import digest
 from credit_risk.workbench.contracts import Case
-from credit_risk.workbench.evaluation import assess
+from credit_risk.workbench.evaluation import assess_training_target
 
 CAUSES = {
     "unknown",
@@ -65,6 +65,7 @@ def submit(
     correction=None,
     cause="unknown",
     expectations=None,
+    semantic_review=None,
 ):
     if cause not in CAUSES:
         raise ValueError("Unknown feedback cause")
@@ -81,11 +82,11 @@ def submit(
         case.model_copy(update={"expected": expectations}) if expectations is not None else case
     )
     if correction is not None:
-        metrics, diagnostics, parsed = assess(check_case, correction, version)
+        metrics, diagnostics, parsed = assess_training_target(check_case, correction, version, semantic_review)
         expected_metrics_pass = all(
             value == (0 if name == "confidence_brier_score" else 1)
             for name, value in metrics.items()
-            if name != "abstention_precision"
+            if name not in {"abstention_precision", "extractive_support_heuristic"}
         )
         valid = parsed is not None and metrics.get("json_validity") == 1 and not diagnostics
         if testable:
@@ -119,6 +120,7 @@ def submit(
         "feedback",
         {
             "interaction_id": interaction_id,
+            "semantic_review": semantic_review,
             "comment": comment,
             "correction": correction,
             "submitted_correction": original_correction,
@@ -218,6 +220,7 @@ def batch_records(store, task):
                 "provenance": {
                     **case.provenance,
                     "feedback_id": r["id"],
+                    "semantic_review": r.get("semantic_review"),
                     "source_version": r["snapshot"]["version_id"],
                 },
             }

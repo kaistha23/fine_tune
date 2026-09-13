@@ -13,6 +13,8 @@ obligation without its exception.
 from __future__ import annotations
 
 import hashlib
+import json
+from collections import Counter
 import re
 from dataclasses import dataclass, field
 from datetime import date
@@ -74,6 +76,7 @@ def split_sections(text: str) -> list[Section]:
     """Split on headings, keeping each clause with its own heading path."""
     sections: list[Section] = []
     path: list[str] = []
+    levels: list[tuple[int, str]] = []
     current_id = ""
     buffer: list[str] = []
 
@@ -90,9 +93,11 @@ def split_sections(text: str) -> list[Section]:
         flush()
         buffer = []
         section_id, title, depth = found
-        del path[depth - 1 :]
-        path.append(f"{section_id} {title}".strip())
-        current_id = section_id or ".".join(str(i + 1) for i in range(len(path)))
+        while levels and levels[-1][0] >= depth:
+            levels.pop()
+        levels.append((depth, f"{section_id} {title}".strip()))
+        path = [heading for _, heading in levels]
+        current_id = section_id or " / ".join(path)
     flush()
     return sections
 
@@ -129,19 +134,30 @@ def _pack(paragraphs: list[str]) -> list[str]:
 def chunk_document(text: str, meta: DocumentMeta) -> list[PolicyChunk]:
     """Chunk one document, carrying full lineage onto every piece."""
     chunks: list[PolicyChunk] = []
+    occurrences = Counter()
     for section in split_sections(text):
+        heading = tuple(section.heading_path)
+        occurrences[heading] += 1
+        section_key = hashlib.sha256(json.dumps(
+            [section.heading_path, occurrences[heading]], ensure_ascii=False
+        ).encode()).hexdigest()[:24]
         paragraphs = [p.strip() for p in re.split(r"\n\s*\n", section.text) if p.strip()]
         for index, body in enumerate(_pack(paragraphs)):
             if len(body) < MIN_CHARS and len(chunks) and not section.section_id:
                 # Fragments too small to stand alone rejoin the previous chunk rather
                 # than becoming a citation that says nothing.
                 previous = chunks[-1]
-                chunks[-1] = previous.model_copy(update={"text": f"{previous.text}\n\n{body}"})
+                merged = f"{previous.text}\n\n{body}"
+                chunks[-1] = previous.model_copy(update={
+                    "text": merged, "content_hash": hashlib.sha256(merged.encode()).hexdigest(),
+                    "summary": merged[:200],
+                })
                 continue
             digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
             chunks.append(
                 PolicyChunk(
-                    chunk_id=f"{meta.document_id}@{meta.document_version}:{section.section_id or 'body'}:{index}",
+                    chunk_id=f"v2:{meta.document_id}@{meta.document_version}:{section_key}:{index}",
+                    section_key=section_key,
                     jurisdiction=meta.jurisdiction,
                     document_id=meta.document_id,
                     document_version=meta.document_version,

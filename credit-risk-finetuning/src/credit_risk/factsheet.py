@@ -167,5 +167,7 @@ def build_factsheet(
         events=detect_events(ordered),
         model_outputs=model_outputs,
         missing_information=missing,
-        data_quality_flags=detect_data_quality(ordered, plan),
+        data_quality_flags=detect_data_quality(ordered, plan)
+        + [f"invalid_metric:{name}" for name, metric in metrics.items()
+           if metric.validation_status == "invalid"],
     )

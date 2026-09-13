@@ -86,7 +86,7 @@ class FactsheetTests(unittest.TestCase):
         self.assertEqual(sheet.observation_months, 3)
         self.assertEqual(sheet.calculated_metrics["current_ratio"].value, 0.9)
         self.assertEqual(
-            sheet.calculated_metrics["current_ratio"].formula_id, "ratio.current_ratio.v1"
+            sheet.calculated_metrics["current_ratio"].formula_id, "ratio.current_ratio.v2"
         )
         self.assertEqual(sheet.calculated_metrics["utilisation_pct"].value, 80.0)
 

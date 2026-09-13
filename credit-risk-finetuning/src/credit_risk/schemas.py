@@ -218,6 +218,7 @@ class InteractionRecord(BaseModel):
 
 
 class FeedbackRecord(BaseModel):
+    semantic_review: dict[str, Any] = Field(default_factory=dict)
     attempted_query_plan: dict[str, Any] | None = None
     reviewed_query_plan: dict[str, Any] | None = None
     sql_review_packet: dict[str, Any] | None = None

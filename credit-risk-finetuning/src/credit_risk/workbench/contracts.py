@@ -105,6 +105,8 @@ def messages(case, version):
 
 def inspect_dataset(manifest_path):
     path = Path(manifest_path).expanduser().resolve()
+    if path.is_dir():
+        path = path / "manifest.json"
     raw = json.loads(path.read_text())
     if raw.get("format") not in ("credit-workbench-v1", "credit-workbench-v2") or raw.get(
         "task"

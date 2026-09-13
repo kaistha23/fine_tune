@@ -232,6 +232,26 @@ def assess(case, answer, version, query_checker=None):
     }
 
 
+
+def assess_training_target(case, answer, version, semantic_review=None):
+    """Reuse field checks while keeping training admission separate from serving policy."""
+    metrics, failures, parsed = assess(case, answer, version)
+    if case.task == "credit_analysis" and parsed:
+        from credit_risk.guardrails import is_admissible_training_target
+
+        admission = is_admissible_training_target(
+            CreditResponse.model_validate(parsed["answer"]),
+            [Evidence.model_validate(e) for e in case.evidence], case.facts,
+            semantic_review or case.provenance.get("semantic_review"),
+        )
+        metrics["training_target_admissible"] = float(admission.passed)
+        if admission.passed:
+            failures = [f for f in failures if f not in {"unsupported_claim", "unverified_narrative"}]
+        else:
+            failures.extend(admission.failures)
+    return metrics, failures, parsed
+
+
 def _bootstrap_interval(values, seed=42):
     if len(values) < 2:
         return [values[0], values[0]]
@@ -399,8 +419,34 @@ def evaluate(cases, provider, version, identity, query_checker=None):
                 )
                 if row["metrics"]["negative_control_distinction"] == 0:
                     row["failures"].append("changed_question_false_match")
+    from credit_risk.evaluation.cli import release_report, serializable
+    from credit_risk.evaluation.gates import ReleaseGates
+    from credit_risk.evaluation.metrics import GoldCase
+    from credit_risk.settings import settings
+
+    release_cases = [GoldCase(
+        case_id=c.case_id, group_id=c.group_id, portfolio=c.portfolio,
+        jurisdiction=c.jurisdiction, task_type=c.task, question=c.question,
+        factsheet=c.facts, factsheet_case_id=c.facts.get("case_id"),
+        available_evidence=[Evidence.model_validate(e) for e in c.evidence],
+        must_abstain=c.expected.get("must_abstain", False),
+        is_injection_attempt=c.expected.get("is_injection_attempt", False),
+        required_risk_drivers=c.expected.get("risk_drivers", []),
+        required_evidence_ids=c.expected.get("evidence_ids", []),
+        expected_numerics={k: v["value"] if isinstance(v, dict) else v
+                           for k, v in c.expected.get("numerics", {}).items()},
+    ) for c in cases if c.task == "credit_analysis" and c.split in ("test", "oot")]
+    release_ids = {c.case_id for c in release_cases}
+    predictions = {r["case_id"]: {"output": r["attempts"][0]["output"],
+                                  "provider_failed": r["attempts"][0]["output"] is None}
+                   for r in rows if r["case_id"] in release_ids}
+    release = release_report(release_cases, predictions, ReleaseGates(settings.evaluation_thresholds),
+                             metadata={"generation": identity.get("generation"),
+                                       "candidate_identity": identity,
+                                       "prompt_hash": identity.get("prompt_hash", digest(version["prompt"]))})
     return {
         "identity": identity,
+        "release_evaluation": serializable(release),
         "evaluator_version": "field-checks-v2",
         "case_set_hash": digest([c.model_dump() for c in cases]),
         "splits": {

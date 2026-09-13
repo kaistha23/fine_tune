@@ -133,7 +133,19 @@ def data_call(operation, payload):
 
 @app.get("/health")
 def health() -> dict[str, str]:
+    readiness = "offline_test" if settings.offline_test_mode else "ready"
+    if not settings.offline_test_mode:
+        try:
+            retriever.index.embedder.embed_query("retrieval readiness probe")
+            if settings.qdrant_url:
+                for collection in retrieval_policy.data["namespaces"].values():
+                    if not retriever.index.client.collection_exists(collection):
+                        raise ValueError("Unindexed collection")
+                    retriever.index._check_signature(collection)
+        except Exception as exc:
+            raise HTTPException(503, "Retrieval backend is not ready") from exc
     return {
+        "retrieval_readiness": readiness,
         "status": "ok",
         "role": settings.service_role,
         "schema_registry_version": registry.version,
@@ -184,6 +196,7 @@ def _request_rows(request: QueryValidationRequest):
 
 
 class AnalysisFeedbackRequest(BaseModel):
+    semantic_review: dict = Field(default_factory=dict)
     model_config = ConfigDict(extra="forbid")
     """A reviewer's verdict on an answer the system actually served.
 
@@ -255,6 +268,10 @@ def analysis_feedback(request: AnalysisFeedbackRequest) -> dict:
             ),
         )
 
+    semantic_review = {}
+    if request.semantic_review:
+        semantic_review = {**request.semantic_review, "reviewer_id": current_reviewer()["id"],
+                           "status": request.review_status}
     if corrected_output:
         try:
             corrected = CreditResponse.model_validate_json(corrected_output)
@@ -265,11 +282,10 @@ def analysis_feedback(request: AnalysisFeedbackRequest) -> dict:
             ) from exc
 
         evidence = [Evidence.model_validate(item) for item in interaction.evidence]
-        check = validate_output(
-            corrected,
-            evidence,
-            factsheet_case_id=interaction.case_id,
-            factsheet=interaction.factsheet,
+        from credit_risk.guardrails import is_admissible_training_target
+
+        check = is_admissible_training_target(
+            corrected, evidence, interaction.factsheet, semantic_review
         )
         revalidation = {"performed": True, "passed": check.passed, "failures": check.failures}
         if not check.passed:
@@ -282,6 +298,7 @@ def analysis_feedback(request: AnalysisFeedbackRequest) -> dict:
             )
 
     record = FeedbackRecord(
+        semantic_review=semantic_review,
         interaction_id=request.interaction_id,
         reviewer_id=current_reviewer()["id"],
         review_status=request.review_status,

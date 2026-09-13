@@ -56,6 +56,22 @@ class PolicyIndex(Protocol):
     ) -> list[tuple[PolicyChunk, float]]: ...
 
 
+def validate_chunk_ids(chunks):
+    seen = {}
+    citations = {}
+    for chunk in chunks:
+        payload = chunk.model_dump(mode="json")
+        for key, registry in ((chunk.chunk_id, seen), (chunk.evidence_id, citations)):
+            if key in registry and registry[key] != payload:
+                raise ValueError("Conflicting chunk or evidence identity: " + key)
+            registry[key] = payload
+
+
+def score_candidates(embedder, query, chunks):
+    vector = embedder.embed_query(query)
+    return {c.chunk_id: cosine(vector, embedder.embed(c.text)) for c in chunks}
+
+
 class InMemoryPolicyIndex:
     """Reference backend, partitioned by collection exactly as Qdrant is."""
 
@@ -84,20 +100,33 @@ class InMemoryPolicyIndex:
         collection: str | None = None,
         namespaces: dict[str, str] | None = None,
     ) -> None:
+        validate_chunk_ids(chunks)
+        grouped = {}
         for chunk in chunks:
             name = collection or (namespaces or {}).get(chunk.jurisdiction.value)
             if name is None:
-                raise ValueError(
-                    f"No collection for jurisdiction {chunk.jurisdiction.value}; "
-                    "a chunk must never land in a shared namespace"
-                )
+                raise ValueError(f"No collection for jurisdiction {chunk.jurisdiction.value}")
+            grouped.setdefault(name, []).append(chunk)
+        # Validate the entire batch before changing any collection.
+        for name, group in grouped.items():
+            self._check_signature(name, writing=False)
+            validate_chunk_ids([*self._collections.get(name, []), *group])
+        for name, group in grouped.items():
             self._check_signature(name, writing=True)
-            self._collections.setdefault(name, []).append(chunk)
-            self._vectors.setdefault(name, []).append(self.embedder.embed(chunk.text))
+            existing = self._collections.setdefault(name, [])
+            for chunk in group:
+                if any(c.chunk_id == chunk.chunk_id for c in existing):
+                    continue
+                vector = self.embedder.embed(chunk.text)
+                existing.append(chunk)
+                self._vectors.setdefault(name, []).append(vector)
 
     def _visible(self, predicate: AccessPredicate) -> list[tuple[int, PolicyChunk]]:
         chunks = self._collections.get(predicate.collection, [])
         return [(i, c) for i, c in enumerate(chunks) if chunk_is_visible(c, predicate)]
+
+    def score_candidates(self, query, chunks):
+        return score_candidates(self.embedder, query, chunks)
 
     def search_dense(
         self, query: str, predicate: AccessPredicate, limit: int
@@ -296,6 +325,7 @@ class QdrantPolicyIndex:
         from qdrant_client import models
 
         grouped: dict[str, list[PolicyChunk]] = {}
+        validate_chunk_ids(chunks)
         for chunk in chunks:
             name = collection or (namespaces or {}).get(chunk.jurisdiction.value)
             if name is None:
@@ -307,8 +337,15 @@ class QdrantPolicyIndex:
 
         for name, group in grouped.items():
             self.ensure_collection(name)
+            existing = self.client.retrieve(
+                collection_name=name,
+                ids=[stable_point_id(chunk.chunk_id) for chunk in group],
+                with_payload=True,
+            )
+            validate_chunk_ids([*[from_payload(p.payload) for p in existing], *group])
             self.client.upsert(
                 collection_name=name,
+                wait=True,
                 points=[
                     models.PointStruct(
                         id=stable_point_id(chunk.chunk_id),
@@ -318,6 +355,9 @@ class QdrantPolicyIndex:
                     for chunk in group
                 ],
             )
+
+    def score_candidates(self, query, chunks):
+        return score_candidates(self.embedder, query, chunks)
 
     def search_dense(
         self, query: str, predicate: AccessPredicate, limit: int

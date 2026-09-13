@@ -13,7 +13,7 @@ import yaml
 from credit_risk.review_store import digest
 from credit_risk.tokenization import CHAT_TEMPLATE_MODE, configure_non_thinking
 from credit_risk.workbench.contracts import Case, inspect_dataset, messages
-from credit_risk.workbench.evaluation import assess, evaluate
+from credit_risk.workbench.evaluation import assess_training_target, evaluate
 from credit_risk.workbench.store import Store
 
 PROJECT = Path(__file__).resolve().parents[3]
@@ -79,26 +79,22 @@ def prepare_training(spec, tokenizer=None, write=False):
             continue
         if case.target is None:
             raise ValueError("Training/validation targets required")
-        _metrics, failures, parsed = assess(case, case.target, version)
+        _metrics, failures, parsed = assess_training_target(case, case.target, version)
         if not parsed or failures:
             raise ValueError("Target failed validation: " + case.case_id)
         turns = messages(case, version) + [
             {"role": "assistant", "content": json.dumps(case.target, ensure_ascii=False)}
         ]
-        full = tokenizer.apply_chat_template(turns, tokenize=True, return_dict=False)
-        prefix = tokenizer.apply_chat_template(
-            turns[:-1], tokenize=True, add_generation_prompt=True, return_dict=False
-        )
-        # Match MLX ChatDataset.process, including its actual prompt mask boundary.
-        from mlx_lm.tuner.datasets import ChatDataset
+        from credit_risk.tokenization import verify_training_tokens
 
-        processed = ChatDataset(
-            [{"messages": turns}], tokenizer, chat_key="messages", mask_prompt=True
-        ).process({"messages": turns})
-        if list(processed[0]) != list(full) or processed[1] != len(prefix):
-            raise ValueError("Trainer tokenization or mask mismatch")
-        if len(full) > spec["config"]["max_seq_length"] or len(full) <= len(prefix):
-            raise ValueError("Overlength or empty assistant target: " + case.case_id)
+        full, prefix = verify_training_tokens(tokenizer, turns)
+        if len(full) > spec["config"]["max_seq_length"]:
+            raise ValueError(
+                f"Sequence too long for {case.case_id}: requires {len(full)} tokens; "
+                f"configured limit is {spec['config']['max_seq_length']}"
+            )
+        if len(full) <= len(prefix):
+            raise ValueError("Assistant target has no trainable tokens: " + case.case_id)
         token_lengths.append(len(full))
         assistant_tokens.append(len(full) - len(prefix))
         chats["train" if case.split == "train" else "valid"].append({"messages": turns})

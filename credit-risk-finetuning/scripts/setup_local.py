@@ -22,7 +22,9 @@ content = (
     + secrets.token_urlsafe(32)
     + "\nCR_REVIEWERS="
     + json.dumps(reviewers)
-    + "\n"
+    + "\nCR_EMBEDDING_MODEL=\n"
+    + "CR_EMBEDDING_REVISION=\n"
+    + "CR_OMLX_API_KEY=\n"
 )
 for path, value in zip(paths, [content, token + "\n"]):
     with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as handle:

@@ -15,7 +15,7 @@ import yaml
 
 from credit_risk.dataset import verify_manifest
 from credit_risk.review_store import digest
-from credit_risk.tokenization import CHAT_TEMPLATE_MODE, configure_non_thinking
+from credit_risk.tokenization import CHAT_TEMPLATE_MODE, configure_non_thinking, verify_training_tokens
 
 DEFAULT_CONFIG = Path("configs/training.yaml")
 DEFAULT_MODEL_DIR = Path("models/candidates")
@@ -88,10 +88,7 @@ def preflight(config, tokenizer=None):
     for split in ("train", "valid"):
         for line in (Path(cfg["data"]) / (split + ".jsonl")).read_text().splitlines():
             turns = json.loads(line)["messages"]
-            full = tokenizer.apply_chat_template(turns, tokenize=True, return_dict=False)
-            prefix = tokenizer.apply_chat_template(
-                turns[:-1], tokenize=True, add_generation_prompt=True, return_dict=False
-            )
+            full, prefix = verify_training_tokens(tokenizer, turns)
             if len(full) > maximum or len(full) <= len(prefix):
                 raise ValueError("Truncated or empty assistant target")
             lengths.append(len(full))
@@ -129,6 +126,21 @@ class EarlyStop(Exception):
 
 
 def execute_training(cfg, metadata):
+    output = Path(cfg["adapter_path"])
+    if output.exists():
+        raise ValueError("Candidate adapter directory already exists")
+    try:
+        _execute_training(cfg, metadata)
+    except Exception as exc:
+        if output.is_dir() and not (output / "completion.json").exists():
+            (output / "completion.json").write_text(json.dumps({
+                "status": "failed", "manifest_version": 2,
+                "error": type(exc).__name__, "selected_checkpoint": None, "promotable": False,
+            }))
+        raise
+
+
+def _execute_training(cfg, metadata):
     import types
 
     import mlx.core as mx
@@ -155,6 +167,8 @@ def execute_training(cfg, metadata):
         bad = 0
         last_iteration = 0
         best_iteration = None
+        baseline_loss = None
+        selected_loss = None
 
         def on_train_loss_report(self, info):
             if not math.isfinite(info["train_loss"]):
@@ -173,16 +187,28 @@ def execute_training(cfg, metadata):
             self.last_iteration = max(self.last_iteration, info["iteration"])
             with (output / "metrics.jsonl").open("a") as f:
                 f.write(json.dumps({"validation": info}) + "\n")
+            iteration = info["iteration"]
+            loss = info["val_loss"]
+            if iteration == 0:
+                if self.baseline_loss is not None:
+                    raise ValueError("Duplicate baseline validation")
+                self.baseline_loss = loss
+                self.best = loss
+                return
+            if self.baseline_loss is None:
+                raise ValueError("Baseline validation required before checkpoint selection")
+            if iteration < cfg["grad_accumulation_steps"]:
+                return
             min_delta = cfg.get("early_stopping_min_delta", 0.0)
-            if info["val_loss"] < self.best - min_delta:
-                self.best = info["val_loss"]
+            if loss < self.best - min_delta:
+                self.best = loss
+                self.selected_loss = loss
                 self.bad = 0
-                self.best_iteration = info["iteration"]
-                if info["iteration"] >= 0:
-                    mx.save_safetensors(
-                        str(output / "best_adapters.safetensors"),
-                        dict(tree_flatten(model.trainable_parameters())),
-                    )
+                self.best_iteration = iteration
+                mx.save_safetensors(
+                    str(output / "best_adapters.safetensors"),
+                    dict(tree_flatten(model.trainable_parameters())),
+                )
             else:
                 self.bad += 1
                 if self.bad >= cfg.get("early_stopping_patience", 2):
@@ -217,9 +243,6 @@ def execute_training(cfg, metadata):
         mx.save_safetensors(
             str(final_checkpoint), dict(tree_flatten(model.trainable_parameters()))
         )
-        if status in {"completed", "early_stopped"} and not best_checkpoint.exists():
-            shutil.copyfile(final_checkpoint, best_checkpoint)
-            callback.best_iteration = callback.last_iteration
         (output / "completion.json").write_text(
             json.dumps(
                 {
@@ -233,7 +256,15 @@ def execute_training(cfg, metadata):
                         cfg["iters"] if status == "completed" else callback.last_iteration
                     )
                     // cfg["grad_accumulation_steps"],
+                    "manifest_version": 2,
+                    "baseline_loss": callback.baseline_loss,
+                    "selected_loss": callback.selected_loss,
                     "best_iteration": callback.best_iteration,
+                    "best_optimizer_updates": (callback.best_iteration // cfg["grad_accumulation_steps"])
+                    if callback.best_iteration is not None else None,
+                    "checkpoint_sha256": hashlib.sha256(best_checkpoint.read_bytes()).hexdigest()
+                    if best_checkpoint.exists() else None,
+                    "final_checkpoint_sha256": hashlib.sha256(final_checkpoint.read_bytes()).hexdigest(),
                     "selected_checkpoint": "best_adapters.safetensors"
                     if best_checkpoint.exists()
                     else None,
@@ -273,8 +304,23 @@ def main():
         command = build_fuse_command(a.config, dest)
         command[command.index("--model") + 1] = pinned["model"]
         name = "best_adapters.safetensors" if a.checkpoint == "best" else "adapters.safetensors"
+        if a.checkpoint == "best" and (
+            completion.get("manifest_version") != 2
+            or not completion.get("best_optimizer_updates")
+            or completion.get("selected_loss") is None
+            or completion.get("baseline_loss") is None
+            or completion["selected_loss"] >= completion["baseline_loss"]
+        ):
+            raise ValueError("No verified best checkpoint improved over baseline; select final explicitly")
         if not (adapter / name).is_file():
             raise ValueError("Selected checkpoint unavailable")
+        expected_hash = completion.get(
+            "checkpoint_sha256" if a.checkpoint == "best" else "final_checkpoint_sha256"
+        )
+        if completion.get("manifest_version") == 2 and not expected_hash:
+            raise ValueError("Selected checkpoint has no recorded hash")
+        if expected_hash and hashlib.sha256((adapter / name).read_bytes()).hexdigest() != expected_hash:
+            raise ValueError("Checkpoint hash mismatch")
         if a.execute:
             import tempfile
 

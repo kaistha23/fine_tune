@@ -158,6 +158,7 @@ def test_dataset_checksum_and_split_isolation(tmp_path):
     p = manifest(tmp_path, [case(split="train")])
     result = inspect_dataset(p)
     assert result["counts"] == {"train": 1, "validation": 0, "test": 0, "oot": 0}
+    assert inspect_dataset(tmp_path)["path"] == str(p.resolve())
     (tmp_path / "train.jsonl").write_text("changed")
     with pytest.raises(ValueError, match="checksum"):
         inspect_dataset(p)
@@ -504,6 +505,52 @@ def test_running_job_stop_uses_process_group(tmp_path, monkeypatch):
     assert s.get("job", record["id"])["status"] == "cancelled"
 
 
+def test_job_detail_reports_progress_and_downloads_full_log(tmp_path, monkeypatch):
+    import yaml
+
+    from credit_risk.workbench import server
+
+    monkeypatch.setattr(server, "PROJECT", tmp_path)
+    workspace = tmp_path / "workspace"
+    app = create_app(workspace, False)
+    client = TestClient(app)
+    store = app.state.store
+    identity = "progress-job"
+    output = workspace / "runs" / identity
+    output.mkdir(parents=True)
+    (output / "training.yaml").write_text(yaml.safe_dump({"iters": 128}))
+    (output / "job.log").write_text("complete local log\n")
+    adapter = tmp_path / "adapters/candidates/credit_analysis" / identity
+    adapter.mkdir(parents=True)
+    (adapter / "metrics.jsonl").write_text(
+        json.dumps({"train": {"iteration": 8, "train_loss": 1.0}}) + "\n"
+    )
+    store.add(
+        "job",
+        {
+            "status": "running",
+            "spec": {
+                "kind": "train",
+                "task": "credit_analysis",
+                "output": str(output),
+                "config": {"grad_accumulation_steps": 8},
+            },
+        },
+        identity,
+    )
+    detail = client.get(f"/api/jobs/{identity}").json()
+    assert detail["progress"] == {
+        "current_micro_batches": 8,
+        "total_micro_batches": 128,
+        "current_optimizer_updates": 1,
+        "total_optimizer_updates": 16,
+        "percent": 6.2,
+    }
+    download = client.get(f"/api/jobs/{identity}/log")
+    assert download.text == "complete local log\n"
+    assert f'filename="{identity}.log"' in download.headers["content-disposition"]
+
+
 def test_fuse_selects_best_checkpoint_and_records_hash(tmp_path, monkeypatch):
     import sys
 
@@ -515,7 +562,11 @@ def test_fuse_selects_best_checkpoint_and_records_hash(tmp_path, monkeypatch):
     adapter.mkdir()
     model = tmp_path / "base"
     model.mkdir()
-    (adapter / "completion.json").write_text(json.dumps({"status": "completed"}))
+    (adapter / "completion.json").write_text(json.dumps({
+        "status": "completed", "manifest_version": 2, "best_optimizer_updates": 1,
+        "baseline_loss": 1.0, "selected_loss": .8,
+        "checkpoint_sha256": hashlib.sha256(b"best-unit-fixture").hexdigest(),
+    }))
     (adapter / "adapter_config.json").write_text(json.dumps({"model": str(model)}))
     (adapter / "best_adapters.safetensors").write_bytes(b"best-unit-fixture")
     (adapter / "adapters.safetensors").write_bytes(b"final-unit-fixture")

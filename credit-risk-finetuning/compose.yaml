@@ -13,7 +13,7 @@ x-service-hardening: &service-hardening
 
 x-common-environment: &common-environment
   CR_SCHEMA_REGISTRY: /app/configs/schema_registry.yaml
-  CR_SCHEMA_REGISTRY_VERSION: "1.2.0"
+  CR_SCHEMA_REGISTRY_VERSION: "1.3.0"
   CR_ARCHITECTURE_POLICY: /app/configs/architecture_policy.yaml
   CR_ARCHITECTURE_POLICY_VERSION: "1.2.0"
   CR_SERVICE_TOKEN: ${CR_SERVICE_TOKEN:?Set CR_SERVICE_TOKEN}
@@ -34,9 +34,11 @@ services:
       CR_REVIEWERS: ${CR_REVIEWERS:?Configure reviewers}
       CR_AUDIT_STORE_PATH: /audit/interactions.sqlite3
       # Embeddings come from the native oMLX server, not from inside this container: the
-      # API image has no Metal. Unset falls back to the hashing placeholder, which is not
-      # semantic - /health reports which is in use.
+      # API image has no Metal. A semantic model is mandatory; health checks readiness.
+      # Empty defaults let operators run lifecycle commands such as `compose stop` on an
+      # older checkout. API construction still rejects either missing value before serving.
       CR_EMBEDDING_MODEL: ${CR_EMBEDDING_MODEL:-}
+      CR_EMBEDDING_REVISION: ${CR_EMBEDDING_REVISION:-}
       # Never a literal. Supplied from the host environment or a .env file kept out of git.
       CR_OMLX_API_KEY: ${CR_OMLX_API_KEY:-}
     volumes:
@@ -135,6 +137,7 @@ services:
     environment:
       <<: *common-environment
       CR_SERVICE_ROLE: api_gateway
+      CR_OFFLINE_TEST_MODE: "true"
     volumes:
       - ./tests:/app/tests:ro
     read_only: true

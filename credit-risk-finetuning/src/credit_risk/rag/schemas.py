@@ -26,6 +26,7 @@ class PolicyChunk(BaseModel):
     effective_to: date | None = None
     supersedes_document_id: str | None = None
     section_id: str = ""
+    section_key: str = ""
     chunk_index: int = Field(default=0, ge=0)
     heading_path: list[str] = Field(default_factory=list)
     page_number: int | None = None
@@ -55,6 +56,8 @@ class PolicyChunk(BaseModel):
         pieces of evidence apart. The ordinal is appended only when it is non-zero, so
         the common one-chunk-per-clause citation keeps its plain form.
         """
+        if self.section_key:
+            return f"{self.document_id}@{self.document_version}#v2:{self.section_key}/{self.chunk_index}"
         base = (
             f"{self.document_id}@{self.document_version}#{self.section_id}"
             if self.section_id

@@ -143,3 +143,8 @@ class PinnedVersionTests(unittest.TestCase):
                 value = str(self._environment().get(name, ""))
                 if value:
                     self.assertTrue(value.startswith("${"), f"{name} is a literal")
+
+    def test_missing_embedding_identity_does_not_block_compose_lifecycle_commands(self) -> None:
+        api_environment = self.compose["services"]["api"]["environment"]
+        self.assertEqual(api_environment["CR_EMBEDDING_MODEL"], "${CR_EMBEDDING_MODEL:-}")
+        self.assertEqual(api_environment["CR_EMBEDDING_REVISION"], "${CR_EMBEDDING_REVISION:-}")

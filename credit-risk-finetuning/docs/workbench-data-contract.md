@@ -113,7 +113,7 @@ The feedback export recommends a starting mixture of 20% validated feedback and 
 
 ## Bounded training search
 
-The Runs view exposes the supported local experiment surface: batch/accumulation, sequence limit, rank, scale, dropout, last 16 or all 32 layers, explicit attention/MLP presets, Adam or AdamW, weight decay, constant or cosine schedule, warm-up, minimum learning-rate ratio, seed, patience and minimum loss improvement. Invalid combinations fail preflight. Start with learning rates `1e-5`, `2e-5`, `5e-5`; test adapter capacity only after choosing a learning-rate region, and rerun finalists with multiple seeds. Test and OOT remain outside selection.
+The Runs view exposes the supported local experiment surface: batch/accumulation, sequence limit, rank, scale, dropout, 1/4/8/16/32 adapted layers, explicit attention/MLP presets, Adam or AdamW, weight decay, constant or cosine schedule, warm-up, minimum learning-rate ratio, seed, patience and minimum loss improvement. The safe Qwen3.5-9B local default is one attention-only layer at rank 8; increase capacity only after a native memory check. Invalid combinations fail preflight. Start with learning rates `1e-5`, `2e-5`, `5e-5`; test adapter capacity only after choosing a learning-rate region, and rerun finalists with multiple seeds. Test and OOT remain outside selection.
 
 The cached checkpoint is recorded as MLX quantized LoRA with its actual 4-bit affine/group-size metadata. No NF4, double-quantization or paged-optimizer claim is inferred from the term QLoRA.
 

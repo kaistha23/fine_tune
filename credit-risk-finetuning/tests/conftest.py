@@ -1,3 +1,7 @@
+import os
+
+os.environ["CR_OFFLINE_TEST_MODE"] = "true"
+
 import pytest
 
 from credit_risk.settings import settings

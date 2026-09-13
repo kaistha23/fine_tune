@@ -21,17 +21,23 @@ from credit_risk.settings import Settings
 
 
 def build_embedder(config: Settings) -> Embedder:
-    """The oMLX embedder when a model is configured, otherwise the placeholder.
+    """Require semantic oMLX embeddings except in explicit offline tests.
 
     MLXEmbedder is deliberately not reachable from here. It needs Metal, and the API runs
     in a Linux container; offering it as a setting would produce a stack that works on the
     developer's Mac and fails on deployment.
     """
-    if config.embedding_model:
+    if config.embedding_model and config.embedding_revision:
         return OMLXEmbedder(
             base_url=config.omlx_base_url,
             model=config.embedding_model,
             api_key=config.omlx_api_key,
+            model_revision=config.embedding_revision,
+        )
+    if not config.offline_test_mode:
+        raise ValueError(
+            "CR_EMBEDDING_MODEL and CR_EMBEDDING_REVISION required; "
+            "hashing is restricted to explicit offline tests"
         )
     return HashingEmbedder()
 

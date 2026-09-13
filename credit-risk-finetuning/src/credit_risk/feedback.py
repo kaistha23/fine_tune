@@ -62,6 +62,7 @@ def build_training_batch(records: list[FeedbackRecord]) -> tuple[list[dict], dic
     error_labels = Counter(label for r in by_interaction.values() for label in r.error_labels)
 
     unreconstructable = 0
+    missing_groups = 0
     for record in by_interaction.values():
         routed[REMEDIATION_ROUTES.get(record.root_cause, "unrouted")] += 1
         if record.sql_review_status != "not_reviewed":
@@ -84,14 +85,18 @@ def build_training_batch(records: list[FeedbackRecord]) -> tuple[list[dict], dic
             unreconstructable += 1
             continue
 
-        from credit_risk.guardrails import validate_output
+        if not record.input_factsheet.get("group_id"):
+            missing_groups += 1
+            continue
+
+        from credit_risk.guardrails import is_admissible_training_target
         from credit_risk.schemas import CreditResponse, Evidence
 
-        checked = validate_output(
+        checked = is_admissible_training_target(
             CreditResponse.model_validate_json(record.corrected_output),
             [Evidence.model_validate(e) for e in record.input_evidence],
-            record.input_case_id,
             record.input_factsheet,
+            record.semantic_review,
         )
         if not checked.passed:
             continue
@@ -125,6 +130,7 @@ def build_training_batch(records: list[FeedbackRecord]) -> tuple[list[dict], dic
         # write that cannot be trained on, which is a defect in what the API records at
         # feedback time, not in the correction.
         "skipped_no_captured_input": unreconstructable,
+        "rejected_missing_group_id": missing_groups,
         "root_causes": dict(root_causes),
         "error_labels": dict(error_labels),
         # Every non-training record still has an owner. Dropping them silently is what
@@ -178,6 +184,7 @@ def main() -> None:
                 "quality_score": r.quality_score,
             },
             "data_classification": r.data_classification,
+            "semantic_review": r.semantic_review,
         }
         for r in {r.interaction_id: r for r in records}.values()
         if r.interaction_id in eligible_ids

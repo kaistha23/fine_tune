@@ -9,13 +9,13 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from credit_risk.guardrails import validate_output
+from credit_risk.guardrails import is_admissible_training_target
 from credit_risk.prompts import PROMPT_VERSION, build_messages
 from credit_risk.review_store import digest
 from credit_risk.schemas import CreditResponse, Evidence
 
 DEFAULT_QUESTION = "Assess the supplied credit factsheet using the supplied evidence."
-DATASET_VERSION = "v3.0.0"
+DATASET_VERSION = "v4.0.0"
 SPLITS = ("train", "valid", "test")
 
 
@@ -30,15 +30,20 @@ def build_sft_record(
     task_type: str,
     question: str = "",
     evidence: list[dict[str, Any]] | None = None,
+    semantic_review: dict | None = None,
 ) -> dict:
+    if not case.get("group_id"):
+        raise ValueError("Explicit group_id required")
     evidence = evidence or []
     response = CreditResponse.model_validate_json(target)
-    check = validate_output(
-        response, [Evidence.model_validate(e) for e in evidence], case.get("case_id"), case
+    check = is_admissible_training_target(
+        response, [Evidence.model_validate(e) for e in evidence], case, semantic_review
     )
     if not check.passed:
         raise ValueError("Target failed evidence validation: " + ",".join(check.failures))
-    group = str(case.get("group_id") or case["obligor_id"])
+    if not case.get("group_id"):
+        raise ValueError("Explicit group_id required")
+    group = str(case["group_id"])
     return {
         "example_id": "SFT-"
         + digest(
@@ -108,6 +113,7 @@ def build_dataset(payloads, output: Path, cutoff: date, exclusions: dict | None 
             payload["task_type"],
             payload.get("question", ""),
             payload.get("evidence", []),
+            payload.get("semantic_review"),
         )
         content = digest(record["messages"])
         if content in seen:

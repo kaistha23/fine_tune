@@ -3,15 +3,22 @@ let state = {}, token = '', selectedJob = null;
 const el = id => document.getElementById(id);
 const pretty = value => JSON.stringify(value, null, 2);
 const text = (id, value) => { el(id).textContent = typeof value === 'string' ? value : pretty(value); };
-async function api(path, body) {
+async function api(path, body, retrySession = true) {
   const response = await fetch('/api/' + path, {method: body === undefined ? 'GET' : 'POST', headers: {'Content-Type':'application/json', 'X-Workbench-Token':token}, ...(body === undefined ? {} : {body:JSON.stringify(body)})});
-  const data = await response.json(); if (!response.ok) throw Error(typeof data.detail === 'string' ? data.detail : pretty(data.detail)); return data;
+  const data = await response.json();
+  if (response.status === 403 && data.detail === 'Open the local dashboard first' && path !== 'session' && retrySession) {
+    token = (await api('session', undefined, false)).token;
+    return api(path, body, false);
+  }
+  if (!response.ok) throw Error(typeof data.detail === 'string' ? data.detail : pretty(data.detail)); return data;
 }
 async function action(fn) { try { text('status', 'Working…'); await fn(); text('status', 'Ready — local workspace. No training starts without Start job.'); } catch (e) { text('status', e.message); } }
-function options(id, values, empty) {
+function options(id, values, empty, preferred) {
   const select=el(id), prior=select.value; select.replaceChildren();
   if(empty !== undefined) select.add(new Option(empty,''));
-  values.forEach(v=>select.add(new Option(v.label,v.id))); if([...select.options].some(o=>o.value===prior)) select.value=prior;
+  values.forEach(v=>select.add(new Option(v.label,v.id)));
+  if([...select.options].some(o=>o.value===prior)) select.value=prior;
+  else if([...select.options].some(o=>o.value===preferred)) select.value=preferred;
 }
 function detail(parent, title, value) {
   const d=document.createElement('details'), s=document.createElement('summary'), p=document.createElement('pre');
@@ -21,7 +28,7 @@ function selections() {
   const task=el('task').value;
   options('datasetSelect',(state.datasets||[]).filter(d=>d.manifest.task===task).map(d=>({id:d.id,label:d.manifest.name||d.id.slice(0,12)})),'Select registered data');
   options('model',(state.models||[]));
-  options('version',(state.versions||[]).filter(v=>v.task===task).map(v=>({id:v.id,label:v.name+(state.active[task]===v.id?' · active':'')})));
+  options('version',(state.versions||[]).filter(v=>v.task===task&&v.schema.additionalProperties===false).map(v=>({id:v.id,label:v.name+(state.active[task]===v.id?' · active':'')})),undefined,state.active[task]);
   options('adapter',(state.jobs||[]).filter(j=>j.status==='completed'&&j.spec.kind==='train'&&j.spec.task===task).map(j=>({id:j.id,label:j.id.slice(0,12)})),'Base model');
 }
 async function refresh() {
@@ -50,7 +57,22 @@ function draw(metrics) {
   ctx.strokeStyle='#bdcccf';ctx.strokeRect(50,20,canvas.width-75,160);
   [[train,'#096e66','Training loss'],[valid,'#c46b20','Validation loss']].forEach(([values,color,label],i)=>{ctx.strokeStyle=color;ctx.fillStyle=color;ctx.beginPath();values.forEach((p,n)=>{const x=50+p[0]/maxX*(canvas.width-75),y=180-p[1]/maxY*160;if(n)ctx.lineTo(x,y);else ctx.moveTo(x,y);});ctx.stroke();values.forEach(p=>{ctx.beginPath();ctx.arc(50+p[0]/maxX*(canvas.width-75),180-p[1]/maxY*160,3,0,Math.PI*2);ctx.fill();});ctx.fillText(label,50+i*180,210);});ctx.fillStyle='#183340';ctx.fillText('0',20,180);ctx.fillText(maxY.toFixed(2),5,25);ctx.fillText(maxX+' micro-batches',canvas.width-160,210);
 }
-async function showJob(id){selectedJob=id;const d=await api('jobs/'+id);draw(d.metrics);text('jobDetails',{status:d.job.status,result:d.result,metrics:d.metrics.slice(-4),log:d.log});const last=d.metrics.filter(m=>m.train).at(-1)?.train; text('runNumbers',last?pretty(last):'Throughput / memory / optimizer updates: Not evaluated');}
+function localProgress(d) {
+  if(d.progress?.total_micro_batches)return d.progress;
+  if(d.job.spec.kind!=='train')return {percent:null};
+  const c=d.job.spec.config,n=d.job.spec.dataset.counts.train;
+  const total=Math.ceil(Math.ceil(n*c.epochs/c.batch_size)/c.grad_accumulation_steps)*c.grad_accumulation_steps;
+  const seen=d.metrics.flatMap(m=>['train','validation'].filter(k=>m[k]?.iteration!==undefined).map(k=>m[k].iteration));
+  const current=d.job.status==='completed'?total:Math.max(0,...seen),a=c.grad_accumulation_steps;
+  return {current_micro_batches:current,total_micro_batches:total,current_optimizer_updates:Math.floor(current/a),total_optimizer_updates:Math.floor(total/a),percent:Math.round(1000*current/total)/10};
+}
+async function downloadJobLog(id, visibleLog) {
+  let blob;
+  try {const response=await fetch('/api/jobs/'+id+'/log');if(!response.ok)throw Error();blob=await response.blob();}
+  catch (_) {blob=new Blob([visibleLog],{type:'text/plain'});}
+  const url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=id+'.log';link.click();URL.revokeObjectURL(url);
+}
+async function showJob(id){selectedJob=id;const d=await api('jobs/'+id);draw(d.metrics);const p=localProgress(d),bar=el('jobProgress');if(p.percent===null){bar.removeAttribute('value');text('progressText',d.job.status+' · progress is reported when results are written');}else{bar.value=p.percent;text('progressText',d.job.status+' · '+p.percent.toFixed(1)+'% · '+p.current_micro_batches+'/'+p.total_micro_batches+' micro-batches · '+p.current_optimizer_updates+'/'+p.total_optimizer_updates+' optimizer updates');}text('jobDetails',{status:d.job.status,result:d.result,metrics:d.metrics.slice(-4)});text('jobLog',d.log||'Waiting for log output…');const button=el('downloadLog');button.disabled=!d.log;button.onclick=()=>downloadJobLog(id,d.log);const last=d.metrics.filter(m=>m.train).at(-1)?.train;text('runNumbers',last?pretty(last):(d.job.status==='failed'?'No optimizer update completed. See the job log below.':'Waiting for the first training report.'));}
 function metricTable(parent, title, metrics, task) {
   const h=document.createElement('h3');h.textContent=title;parent.append(h);
   if(!Object.keys(metrics).length){const p=document.createElement('p');p.textContent='Not evaluated';parent.append(p);return;}
@@ -61,6 +83,9 @@ function metricTable(parent, title, metrics, task) {
 }
 document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{document.querySelectorAll('main > section').forEach(s=>s.hidden=s.id!==b.dataset.view);document.querySelectorAll('nav button').forEach(n=>n.classList.toggle('active',n===b));});
 el('task').onchange=selections;
+el('context').value='1664';
+for(const value of ['8','4','1'])if(![...el('layers').options].some(o=>o.value===value))el('layers').add(new Option(value,value),el('layers').firstChild);
+el('layers').value='1';el('targetModules').value='attention';el('rank').value='8';el('dropout').value='0';
 el('register').onclick=()=>action(async()=>{await api('datasets',{path:el('datasetPath').value});await refresh();});
 el('preflight').onclick=()=>action(async()=>text('preflightResult',await api('preflight',request())));
 el('start').onclick=()=>action(async()=>{const j=await api('jobs',request());await refresh();await showJob(j.id);});

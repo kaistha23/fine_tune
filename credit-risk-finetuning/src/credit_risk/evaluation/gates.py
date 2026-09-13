@@ -1,38 +1,33 @@
-"""Release gates read from configs/evaluation_thresholds.yaml.
-
-The file declared eight gates and was read by nothing, so promotion had no evidential
-basis. Gates are applied to the overall scorecard *and* to every portfolio and task
-slice: an aggregate that passes while one portfolio has collapsed is not a pass.
-"""
-
+"""Coverage-aware release decisions. Missing evidence is never a passing score."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+import math
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
 
 import yaml
 
-from credit_risk.evaluation.metrics import ScoreCard
-
-# Gate name -> (scorecard attribute, comparison). "min" means at least, "max" at most.
-GATE_RULES: dict[str, tuple[str, str]] = {
-    "schema_validity": ("schema_validity", "min"),
-    "numerical_agreement": ("numerical_agreement", "min"),
-    "critical_unsupported_claims": ("critical_unsupported_claims", "max"),
-    "cross_jurisdiction_retrieval": ("cross_jurisdiction_retrieval", "max"),
-    "citation_coverage": ("citation_coverage", "min"),
-    "faithfulness": ("faithfulness", "min"),
-    "abstention_recall": ("abstention_recall", "min"),
-    "prompt_injection_block_rate": ("prompt_injection_block_rate", "min"),
+MIN_ELIGIBLE = 30
+GATE_RULES = {
+    name: (name, "max" if name in {"critical_unsupported_claims", "cross_jurisdiction_retrieval"}
+           else "min") for name in (
+        "schema_validity", "numerical_agreement", "critical_unsupported_claims",
+        "cross_jurisdiction_retrieval", "citation_coverage", "extractive_support_rate",
+        "abstention_recall", "prompt_injection_block_rate", "driver_recall",
+        "answer_status_correctness", "required_evidence_recall", "semantic_support_rate",
+    )
 }
+ZERO_TOLERANCE = ("critical_unsupported_claims", "cross_jurisdiction_retrieval",
+                  "numerical_agreement", "answer_status_correctness")
+FRACTIONAL = {"citation_coverage", "driver_recall", "required_evidence_recall"}
 
-# Gates where any breach blocks promotion outright, per both plans' zero-tolerance list.
-ZERO_TOLERANCE = (
-    "critical_unsupported_claims",
-    "cross_jurisdiction_retrieval",
-    "numerical_agreement",
-)
+
+def wilson_lower(successes, n):
+    if not n:
+        return 0.0
+    z = 1.959963984540054
+    p = successes / n
+    return (p + z*z/(2*n) - z*math.sqrt(p*(1-p)/n + z*z/(4*n*n))) / (1 + z*z/n)
 
 
 @dataclass
@@ -40,63 +35,88 @@ class GateResult:
     name: str
     scope: str
     threshold: float
-    observed: float
+    observed: float | None
     passed: bool
     zero_tolerance: bool
+    status: str
+    denominator: int
+    lower_bound: float | None = None
 
-    def describe(self) -> str:
-        direction = "max" if GATE_RULES[self.name][1] == "max" else "min"
-        return (
-            f"{self.scope}/{self.name}: observed {self.observed} "
-            f"vs {direction} {self.threshold} -> {'pass' if self.passed else 'FAIL'}"
-        )
+    def describe(self):
+        return (f"{self.scope}/{self.name}: observed {self.observed}, n={self.denominator}, "
+                f"threshold={self.threshold}, lower_bound={self.lower_bound} -> {self.status}")
 
 
 class ReleaseGates:
-    def __init__(self, path: str | Path):
-        with Path(path).open("r", encoding="utf-8") as handle:
-            self.thresholds: dict[str, Any] = yaml.safe_load(handle)
+    def __init__(self, path):
+        self.thresholds = yaml.safe_load(Path(path).read_text())
         unknown = set(self.thresholds) - set(GATE_RULES)
         if unknown:
             raise ValueError(f"Unknown release gates in thresholds file: {sorted(unknown)}")
+        if set(self.thresholds) != set(GATE_RULES):
+            raise ValueError("All v2 release gates must be configured")
+        for name, value in self.thresholds.items():
+            if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+                raise ValueError("Invalid gate threshold: " + name)
+            if GATE_RULES[name][1] == "min" and value > 1:
+                raise ValueError("Rate threshold must be <= 1")
 
-    def check(self, card: ScoreCard, scope: str) -> list[GateResult]:
-        results: list[GateResult] = []
+    def check(self, card, scope):
+        results = []
         for name, threshold in self.thresholds.items():
-            attribute, comparison = GATE_RULES[name]
-            observed = getattr(card, attribute)
-            passed = observed <= threshold if comparison == "max" else observed >= threshold
-            results.append(
-                GateResult(
-                    name=name,
-                    scope=scope,
-                    threshold=float(threshold),
-                    observed=float(observed),
-                    passed=bool(passed),
-                    zero_tolerance=name in ZERO_TOLERANCE,
-                )
+            observed = getattr(card, name)
+            n = card.denominators.get(name, 0)
+            lower = None
+            comparison = GATE_RULES[name][1]
+            breached = observed is not None and (
+                observed > threshold if comparison == "max" else observed < threshold
             )
+            if not n:
+                status = "not_applicable"
+            elif n < MIN_ELIGIBLE:
+                status = "insufficient_evidence_to_gate"
+            elif breached:
+                status = "failed"
+            elif comparison == "max" or threshold == 1:
+                status = "passed"
+            else:
+                observations = card.observations.get(name, [])
+                if len(observations) != n:
+                    status = "insufficient_evidence_to_gate"
+                else:
+                    # Hoeffding handles bounded fractional observations without falsely
+                    # treating each expected driver/claim as an independent trial.
+                    lower = (max(0, observed - math.sqrt(math.log(20)/(2*n)))
+                             if name in FRACTIONAL else wilson_lower(sum(observations), n))
+                    status = "passed" if lower >= threshold else "insufficient_evidence_to_gate"
+            results.append(GateResult(name, scope, float(threshold), observed, status == "passed",
+                                      name in ZERO_TOLERANCE, status, n, lower))
         return results
 
 
-def evaluate_gates(scores: dict[str, Any], gates: ReleaseGates) -> dict[str, Any]:
-    """Apply gates overall and to every slice, and say plainly whether this may ship."""
-    results: list[GateResult] = list(gates.check(scores["overall"], "overall"))
-    for portfolio, card in scores["by_portfolio"].items():
-        results.extend(gates.check(card, f"portfolio:{portfolio}"))
-    for task, card in scores["by_task"].items():
-        results.extend(gates.check(card, f"task:{task}"))
-
-    failures = [r for r in results if not r.passed]
+def evaluate_gates(scores, gates):
+    results = gates.check(scores["overall"], "overall")
+    for kind in ("portfolio", "task"):
+        for name, card in scores["by_" + kind].items():
+            results.extend(gates.check(card, f"{kind}:{name}"))
     missing = sorted({"retail", "sme", "corporate"} - set(scores["by_portfolio"]))
-    coverage_ok = scores["overall"].n > 0 and not missing
-    blocking = [r for r in failures if r.zero_tolerance]
+    # Optional populations may be absent in a slice, but every configured capability
+    # needs coverage overall. A caller cannot drop a whole attack population to pass.
+    missing_metrics = [r.name for r in results if r.scope == "overall"
+                       and r.status == "not_applicable"]
+    failures = [r for r in results if r.status == "failed"]
+    insufficient = [r for r in results if r.status == "insufficient_evidence_to_gate"]
+    passed = not (failures or insufficient or missing or missing_metrics) and scores["overall"].n > 0
+    from credit_risk.evaluation.qualification import qualification_eligibility
+    qualified, reasons = qualification_eligibility(scores)
     return {
-        "passed": not failures and coverage_ok,
-        "promotable": False,
-        "coverage_missing": missing,
-        "promotion_block": "Requires independent grounding and retrieval calibration plus reviewed benchmark manifest",
-        "blocking_failures": [r.describe() for r in blocking],
+        "report_version": 2, "passed": passed, "promotable": passed and qualified,
+        "coverage_missing": missing, "metric_coverage_missing": missing_metrics,
+        "status": "failed" if failures else (
+            "passed" if passed else "insufficient_evidence_to_gate"),
+        "promotion_block": reasons,
+        "blocking_failures": [r.describe() for r in failures if r.zero_tolerance],
         "failures": [r.describe() for r in failures],
-        "checked": len(results),
+        "insufficient_evidence": [r.describe() for r in insufficient],
+        "results": [asdict(r) for r in results], "checked": len(results),
     }

@@ -117,7 +117,8 @@ def validate_output(
 
 def supported_text(statement: str, source: str) -> bool:
     """Conservative extractive verification, not a claim of semantic entailment."""
-    normalise = lambda s: re.sub(r"\s+", " ", s).strip().rstrip(".").casefold()
+    def normalise(s):
+        return re.sub(r"\s+", " ", s).strip().rstrip(".").casefold()
     text = normalise(statement)
     sentences = re.split(r"(?<=[.!?])\s+|\n+", source)
     return bool(text) and any(text == normalise(sentence) for sentence in sentences)
@@ -136,3 +137,32 @@ def factsheet_statements(sheet: dict) -> str:
 
     walk(sheet)
     return " ".join(statements)
+
+
+def is_extractive_copy(response, evidence, factsheet_case_id=None, factsheet=None):
+    """Serving acceptance only; no claim of semantic entailment."""
+    return validate_output(response, evidence, factsheet_case_id, factsheet)
+
+
+def is_admissible_training_target(response, evidence, factsheet, review=None):
+    """Permit supported paraphrases only with context-bound semantic/numeric review.
+
+    The normal dataset approval and provenance requirements still apply at the builder.
+    A review is bound to the exact target and sources so it cannot be reused after edits.
+    """
+    from credit_risk.review_store import digest
+
+    check = validate_output(response, evidence, factsheet.get("case_id"), factsheet)
+    hard = [f for f in check.failures if f not in {"unsupported_claim", "unverified_narrative"}]
+    soft = [f for f in check.failures if f in {"unsupported_claim", "unverified_narrative"}]
+    review = review or {}
+    bound = digest({"target": response.model_dump(mode="json"), "factsheet": factsheet,
+                    "evidence": [e.model_dump(mode="json") for e in evidence]})
+    verified = (review.get("reviewer_id") and review.get("status") == "approved"
+                and review.get("semantic_supported") is True
+                and review.get("numerics_verified") is True
+                and review.get("content_hash") == bound)
+    if soft and not verified:
+        hard.append("semantic_and_numeric_review_required")
+    # Unknown/uncited material facts cannot be waived by a semantic review.
+    return GuardrailResult(not hard, hard)

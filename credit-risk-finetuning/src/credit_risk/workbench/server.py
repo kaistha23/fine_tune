@@ -11,8 +11,9 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 
+import yaml
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from credit_risk.schemas import compact_json_schema
@@ -41,6 +42,7 @@ class Version(Strict):
 
 
 class Feedback(Strict):
+    semantic_review: dict | None = None
     submission_id: str = Field(min_length=1, max_length=128)
     interaction_id: str
     comment: str = Field(default="", max_length=8000)
@@ -50,19 +52,19 @@ class Feedback(Strict):
 
 
 class LoRAParameters(Strict):
-    rank: Literal[8, 16, 32] = 16
+    rank: Literal[8, 16, 32] = 8
     scale: Literal[1.0, 2.0] = 2.0
-    dropout: Literal[0.0, 0.05] = 0.05
+    dropout: Literal[0.0, 0.05] = 0.0
 
 
 class Config(Strict):
     batch_size: int = Field(default=1, ge=1, le=2)
     epochs: int = Field(default=2, ge=1, le=10)
     grad_accumulation_steps: int = Field(default=8, ge=1, le=32)
-    max_seq_length: int = Field(default=2048, ge=256, le=8192)
+    max_seq_length: int = Field(default=1664, ge=256, le=8192)
     learning_rate: float = Field(default=2e-5, gt=0, le=0.001)
-    num_layers: Literal[16, 32] = 16
-    target_modules: Literal["all_linear", "attention", "attention_mlp"] = "all_linear"
+    num_layers: Literal[1, 4, 8, 16, 32] = 1
+    target_modules: Literal["all_linear", "attention", "attention_mlp"] = "attention"
     optimizer: Literal["adam", "adamw"] = "adam"
     weight_decay: float = Field(default=0.0, ge=0, le=0.1)
     schedule: Literal["constant", "cosine_decay"] = "constant"
@@ -156,9 +158,7 @@ def create_app(root=None, start_scheduler=True):
 
     @app.exception_handler(OSError)
     async def file_error(request, exc):
-        return JSONResponse(
-            {"detail": "Local artifact unavailable: " + type(exc).__name__}, status_code=422
-        )
+        return JSONResponse({"detail": "Local artifact unavailable: " + str(exc)}, status_code=422)
 
     @app.get("/", response_class=HTMLResponse)
     def page():
@@ -262,6 +262,7 @@ def create_app(root=None, start_scheduler=True):
             request.correction,
             request.cause,
             request.expectations,
+            request.semantic_review,
         )
 
     @app.get("/api/feedback/batch/{task}")
@@ -471,14 +472,47 @@ def create_app(root=None, start_scheduler=True):
                     metrics.append(json.loads(line))
                 except json.JSONDecodeError:
                     pass
+        total = current = None
+        if job["spec"]["kind"] == "train":
+            training_config = output / "training.yaml"
+            if training_config.is_file():
+                total = int(yaml.safe_load(training_config.read_text())["iters"])
+            for entry in metrics:
+                for kind in ("train", "validation"):
+                    if kind in entry and "iteration" in entry[kind]:
+                        current = max(current or 0, int(entry[kind]["iteration"]))
+            current = current or 0
+            if job["status"] == "completed" and total is not None:
+                current = total
+        accumulation = int(job["spec"].get("config", {}).get("grad_accumulation_steps", 1))
+        progress = {
+            "current_micro_batches": current,
+            "total_micro_batches": total,
+            "current_optimizer_updates": current // accumulation if current is not None else None,
+            "total_optimizer_updates": total // accumulation if total is not None else None,
+            "percent": round(100 * current / total, 1) if total else None,
+        }
         return {
             "job": job,
             "result": result,
             "metrics": metrics,
+            "progress": progress,
             "log": (output / "job.log").read_text(errors="replace")[-20000:]
             if (output / "job.log").exists()
             else "",
         }
+
+    @app.get("/api/jobs/{identity}/log")
+    def download_job_log(identity: str):
+        job = store.get("job", identity)
+        output = Path(job["spec"]["output"]).resolve()
+        runs = (store.root / "runs").resolve()
+        if not output.is_relative_to(runs):
+            raise ValueError("Job output is outside the workspace")
+        log = output / "job.log"
+        if not log.is_file():
+            raise ValueError("Job log is not available yet")
+        return FileResponse(log, media_type="text/plain", filename=f"{identity}.log")
 
     @app.get("/api/compare/{left}/{right}")
     def comparison(left: str, right: str, mode: Literal["model", "prompt"] = "model"):

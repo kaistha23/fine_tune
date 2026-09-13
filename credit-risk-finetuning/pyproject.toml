@@ -24,15 +24,18 @@ rag = ["qdrant-client>=1.19,<1.20", "rank-bm25>=0.2.2"]
 training = ["mlx-lm[train]>=0.30; platform_system == 'Darwin' and platform_machine == 'arm64'"]
 # Qwen3-Embedding runs through the same mlx-lm the trainer uses, so there is no
 # second inference stack to keep in step. Darwin/arm64 only; the offline container
-# falls back to HashingEmbedder, which is a placeholder and not a retrieval claim.
+# uses oMLX; HashingEmbedder is available only in explicit offline tests.
 embedding = ["mlx-lm>=0.30; platform_system == 'Darwin' and platform_machine == 'arm64'"]
 evaluation = ["deepeval>=2.0", "ragas>=0.2"]
-dev = ["pytest>=8.3", "ruff>=0.9"]
+dev = ["pytest>=8.3", "ruff==0.16.6"]
 
 [project.scripts]
 credit-risk-api = "credit_risk.api:run"
 credit-risk-build-sft = "credit_risk.dataset:main"
 credit-risk-build-feedback = "credit_risk.feedback:main"
+credit-risk-evaluate = "credit_risk.evaluation.cli:main"
+credit-risk-qualify = "credit_risk.evaluation.calibrate:main"
+credit-risk-reindex = "credit_risk.rag.reindex:main"
 credit-risk-train = "credit_risk.training:main"
 
 [build-system]
@@ -49,3 +52,6 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
