@@ -3,11 +3,12 @@
 ## Context
 
 The audit's pitfalls were mostly fixed in the current working tree on
-`data_prep_code_updates`. Verified on that tree: **434 passed, 35 skipped,
+`data_prep_code_updates`. Verified on that tree: **441 passed, 35 skipped,
 `ruff check .` clean**, CI and pre-commit added. What is still missing is on the **data**
 side: the model is trained and gated on 8 gold cases, thresholds live only in policy prose,
-numbers carry no units, nothing detects template clones, and data-generation code is spread
-across `scripts/` and `src/`.
+and no reviewed phase-2 dataset reaches the coverage gate. Governed units and consolidated
+data generation are complete; taxonomy and diversity controls precede deterministic
+derivations and policy rules.
 
 The dedicated data-prep package now owns the fixture, gold, and spike generators. The remaining
 phases build four things into it:
@@ -29,10 +30,10 @@ answers. Extraction of rules from policy by LLM is deferred.
 | Placeholder embedder shipped | Fixed — `CR_EMBEDDING_MODEL:?` required; `extra` forbids unknown keys |
 | `promote` ignores gates | Fixed — reads `passed` (`runner.py:92`); Wilson bound, `MIN_ELIGIBLE = 30` |
 | No CI | Fixed — `.github/workflows/credit-risk.yml` (untracked) |
-| **Work uncommitted** (41 modified, 17 untracked) | **Open** |
+| **Work uncommitted** (41 modified, 17 untracked) | **Fixed** — foundation landed in `c2d3ed2` |
 | **Gold set = 8 cases** vs `MIN_ELIGIBLE = 30` per gated slice | **Open** — every gate reports insufficient |
 | **No `unit` on `MetricValue`** | **Fixed** — required units, registry 1.4.0 |
-| **Seed dataset has no template-family leakage check or cap** | **Open** (workbench path only) |
+| **Seed dataset has no template-family leakage check or cap** | **Fixed** — shared family/clone cap and split check |
 | Workbench token via `GET /api/session`; owner-bound approval; self-certifying workbench feedback; open `/docs`; no SQLite migrations | Open — out of scope here, listed for tracking |
 
 ---
@@ -210,7 +211,7 @@ rules:
 **Phase 2 — units (completed)**
 7. `MetricValue`, registry 1.4.0, calculators, and direct factsheet metrics carry governed units.
 
-**Phase 3 — coverage and diversity**
+**Phase 3 — coverage and diversity (completed)**
 8. `taxonomy.py`: task types and situations as enums; validate payload `task_type`/`situation`.
 9. `coverage.py` + `configs/data_prep/coverage_targets.yaml`; coverage cells written to the dataset manifest.
 10. `diversity.py`: clone skeleton, shared `MAX_PER_TEMPLATE_FAMILY`, near-miss requirement.
@@ -242,7 +243,7 @@ rules:
 
 | Step | Check |
 |---|---|
-| 1–3 | `uv run --no-sync pytest -q` = 418 passed / 35 skipped; `ruff check .` clean; CI green on push |
+| 1–3 | `uv lock --check`; `uv run ruff check .`; `uv run pytest -q` = 441 passed / 35 skipped |
 | 4–6 | Existing fixture consumers pass; the unified fixture and gold commands are covered; no legacy script remains |
 | 7 | Every `calculated_metrics` entry in a built factsheet has a non-null `unit` |
 | 8–11 | Payload with unknown `task_type` rejected; 51 cases in one family fail build; same family in train and test fails; digits-only variants collapse to one skeleton; a trigger family without a near-miss fails |

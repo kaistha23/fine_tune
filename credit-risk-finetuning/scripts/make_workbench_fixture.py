@@ -94,6 +94,8 @@ def make_case(con, identity: tuple[str, str, str], split: str, source_hash: str)
         "case_id": case_id,
         "group_id": obligor_id,
         "task": "credit_analysis",
+        "task_type": "factsheet",
+        "situation": "base",
         "split": split,
         "question": SPLIT_TEMPLATES[split],
         "portfolio": portfolio,

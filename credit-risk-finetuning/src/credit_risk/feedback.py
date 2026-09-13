@@ -166,7 +166,7 @@ def main() -> None:
 
     from datetime import date
 
-    from credit_risk.dataset import build_dataset
+    from credit_risk.dataset import build_dataset, stable_split
 
     records = load_feedback(args.input)
     examples, report = build_training_batch(records)
@@ -185,6 +185,13 @@ def main() -> None:
             },
             "data_classification": r.data_classification,
             "semantic_review": r.semantic_review,
+            "situation": r.input_factsheet.get("situation", "base"),
+            "template_family": (
+                "validated-feedback-"
+                + stable_split(r.input_factsheet["group_id"])
+                + "-"
+                + r.task_type
+            ),
         }
         for r in {r.interaction_id: r for r in records}.values()
         if r.interaction_id in eligible_ids

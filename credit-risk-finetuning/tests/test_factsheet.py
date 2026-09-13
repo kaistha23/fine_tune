@@ -171,6 +171,8 @@ class DatasetFormatTests(unittest.TestCase):
                             {"answer_status": "INSUFFICIENT_EVIDENCE", "executive_summary": ""}
                         ),
                         "task_type": "credit_deterioration",
+                        "situation": "base",
+                        "template_family": "factsheet-round-trip",
                         "review": {
                             "status": "approved",
                             "reviewer_id": "synthetic",

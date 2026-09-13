@@ -1,5 +1,6 @@
 """Submit-only feedback: persist diagnostics, development checks and recommendations."""
 
+from credit_risk.data_prep.diversity import MAX_PER_TEMPLATE_FAMILY
 from credit_risk.review_store import digest
 from credit_risk.workbench.contracts import Case
 from credit_risk.workbench.evaluation import assess_training_target
@@ -14,7 +15,7 @@ CAUSES = {
     "output_schema",
     "model_behaviour",
 }
-MAX_FEEDBACK_PER_TEMPLATE_FAMILY = 50
+MAX_FEEDBACK_PER_TEMPLATE_FAMILY = MAX_PER_TEMPLATE_FAMILY
 
 
 def _recommendations(cause, version, interaction, correction, diagnostics):

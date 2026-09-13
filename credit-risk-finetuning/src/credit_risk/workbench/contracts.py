@@ -8,8 +8,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from credit_risk.data_prep.taxonomy import Situation, TaskType
 from credit_risk.prompts import SYSTEM_PROMPT
 from credit_risk.review_store import digest
 from credit_risk.schemas import CreditResponse, QueryPlan, compact_json_schema
@@ -36,6 +37,8 @@ class Case(BaseModel):
     case_id: str = Field(min_length=1)
     group_id: str = Field(min_length=1)
     task: Task
+    task_type: TaskType | None = None
+    situation: Situation = Situation.BASE
     split: Split
     question: str = Field(min_length=1)
     portfolio: Literal["retail", "sme", "corporate"]
@@ -52,6 +55,16 @@ class Case(BaseModel):
     sql_lineage: dict | None = None
     provenance: dict = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def legacy_taxonomy_default(self):
+        if self.task_type is None:
+            self.task_type = TaskType.QUERY_PLAN if self.task == "query_plan" else TaskType.FACTSHEET
+        if self.task == "query_plan" and self.task_type != TaskType.QUERY_PLAN:
+            raise ValueError("query_plan cases require query_plan task_type")
+        if self.task != "query_plan" and self.task_type == TaskType.QUERY_PLAN:
+            raise ValueError("query_plan task_type requires query_plan task")
+        return self
+
     def context_hash(self):
         return digest(
             {
@@ -59,6 +72,8 @@ class Case(BaseModel):
                 "fact_records": [fact.model_dump(mode="json") for fact in self.fact_records],
                 "evidence": self.evidence,
                 "task": self.task,
+                "task_type": self.task_type,
+                "situation": self.situation,
                 "portfolio": self.portfolio,
                 "jurisdiction": self.jurisdiction,
                 "as_of_date": self.as_of_date,
@@ -209,6 +224,19 @@ def inspect_dataset(manifest_path):
         fingerprints[key] = case.case_id
         if any(i not in seen or i == case.case_id for i in case.distinct_from):
             raise ValueError("Negative control must reference another registered case")
+    taxonomy_counts = {}
+    for case in cases:
+        key = "|".join(
+            (case.task_type.value, case.portfolio, case.jurisdiction, case.situation.value)
+        )
+        taxonomy_counts[key] = taxonomy_counts.get(key, 0) + 1
+    diversity = None
+    if v2:
+        from credit_risk.data_prep.diversity import diversity_report
+
+        diversity = diversity_report([case.model_dump(mode="json") for case in cases])
+        if diversity["violations"]:
+            raise ValueError("Dataset diversity failed: " + ", ".join(diversity["violations"]))
     return {
         "path": str(path),
         "manifest": raw,
@@ -219,6 +247,8 @@ def inspect_dataset(manifest_path):
         ),
         "missing_expectations": sum(not c.expected for c in cases if c.split != "train"),
         "token_lengths": None,
+        "taxonomy_counts": taxonomy_counts,
+        "diversity": diversity,
         "contract_version": raw["format"],
         "contract_warnings": []
         if v2

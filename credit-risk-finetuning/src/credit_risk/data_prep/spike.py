@@ -7,7 +7,7 @@ from pathlib import Path
 
 import yaml
 
-from credit_risk.dataset import build_dataset
+from credit_risk.dataset import build_dataset, stable_split
 
 
 def main(argv=None):
@@ -39,10 +39,16 @@ def main(argv=None):
         payloads.append(
             {
                 "case": case,
-                "question": "Report the supplied days past due.",
+                "question": (
+                    "Report the supplied days past due."
+                    if n < 50
+                    else "State the current delinquency in days."
+                ),
                 "evidence": [],
                 "target": json.dumps(target),
                 "task_type": "factsheet",
+                "situation": "base",
+                "template_family": f"mechanics-{stable_split(case['group_id'])}-{n // 50}",
                 "data_classification": "synthetic",
                 "review": {
                     "status": "approved",

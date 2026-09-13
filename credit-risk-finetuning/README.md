@@ -26,6 +26,17 @@ uv run credit-risk-data-prep fixture
 docker compose up -d --build api data-service qdrant
 ```
 
+Measure candidate JSONL before admission with the governed coverage matrix and shared
+clone, template-family, split-leakage, and near-miss controls:
+
+```sh
+uv run credit-risk-data-prep coverage candidate.jsonl --out coverage.json
+uv run credit-risk-data-prep diversity candidate.jsonl --out diversity.json
+```
+
+Both commands exit nonzero when checks fail. Coverage defaults to
+`configs/data_prep/coverage_targets.yaml`; `--targets` selects another reviewed matrix.
+
 `setup_local.py` creates private credentials only when neither `.env` nor `.reviewer-token` exists; it preserves existing configuration. Configure reviewers in `CR_REVIEWERS` as an identity map with `role` and SHA256 `token_sha256`. Never commit credentials. The service token and reviewer token serve different boundaries.
 
 Open `http://127.0.0.1:8080/review`, enter the credential from `.reviewer-token`, prepare the example structured plan, inspect the masked SQL packet, approve, then execute. Submit changes through the structured plan correction action. Each correction requires a fresh approval; each approval allows one execution. Rejected, stale and replayed revisions fail closed. The page never executes edited SQL.

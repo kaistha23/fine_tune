@@ -1,9 +1,9 @@
 plan_version: 1
-current_phase: 4
-next_phase: 4
+current_phase: 5
+next_phase: 5
 last_verified:
   command: uv lock --check && uv run ruff check . && uv run pytest -q
-  tests_passed: 434
+  tests_passed: 441
   tests_skipped: 35
   subtests_passed: 9
   ruff: passed
@@ -45,9 +45,13 @@ phases:
   - id: 4
     name: Add taxonomy, coverage, and diversity
     dependencies: [3]
-    status: not_started
-    completed_at: null
-    evidence: []
+    status: completed
+    completed_at: "2026-09-13"
+    evidence:
+      - "cli:credit-risk-data-prep coverage|diversity"
+      - "config:configs/data_prep/coverage_targets.yaml@1.0.0"
+      - "test:tests/test_data_diversity.py"
+      - "test:tests/test_data_prep.py"
   - id: 5
     name: Add deterministic derivations
     dependencies: [3, 4]

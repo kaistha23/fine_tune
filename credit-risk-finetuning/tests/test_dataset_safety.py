@@ -26,6 +26,8 @@ def payload(group="G", asof="2025-01-01"):
         "case": case,
         "target": json.dumps(target),
         "task_type": "factsheet",
+        "situation": "base",
+        "template_family": "fixture-" + stable_split(group),
         "question": "What stage?",
         "evidence": [],
         "review": {"status": "approved", "reviewer_id": "synthetic-reviewer", "quality_score": 5},
