@@ -22,7 +22,7 @@ The implementation and measured limits are recorded in [the validation report](d
 ```sh
 uv sync --frozen --extra dev --extra rag --extra documents --extra training
 uv run python scripts/setup_local.py
-uv run python scripts/make_fixture.py
+uv run credit-risk-data-prep fixture
 docker compose up -d --build api data-service qdrant
 ```
 

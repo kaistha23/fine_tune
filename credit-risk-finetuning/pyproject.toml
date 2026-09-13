@@ -33,6 +33,7 @@ dev = ["pytest>=8.3", "ruff==0.16.6"]
 credit-risk-api = "credit_risk.api:run"
 credit-risk-build-sft = "credit_risk.dataset:main"
 credit-risk-build-feedback = "credit_risk.feedback:main"
+credit-risk-data-prep = "credit_risk.data_prep.cli:main"
 credit-risk-evaluate = "credit_risk.evaluation.cli:main"
 credit-risk-qualify = "credit_risk.evaluation.calibrate:main"
 credit-risk-reindex = "credit_risk.rag.reindex:main"

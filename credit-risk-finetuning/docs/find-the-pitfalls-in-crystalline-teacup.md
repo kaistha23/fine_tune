@@ -3,13 +3,14 @@
 ## Context
 
 The audit's pitfalls were mostly fixed in the current working tree on
-`data_prep_code_updates`. Verified on that tree: **425 passed, 35 skipped,
+`data_prep_code_updates`. Verified on that tree: **427 passed, 35 skipped,
 `ruff check .` clean**, CI and pre-commit added. What is still missing is on the **data**
 side: the model is trained and gated on 8 gold cases, thresholds live only in policy prose,
 numbers carry no units, nothing detects template clones, and data-generation code is spread
 across `scripts/` and `src/`.
 
-This plan adds a dedicated data-prep package and builds four things into it:
+The dedicated data-prep package now owns the fixture, gold, and spike generators. The remaining
+phases build four things into it:
 the tabular-LLM **task taxonomy as a coverage checklist**, **clone/diversity controls**,
 **deterministic derivations**, and **hand-authored policy rules** evaluated before the model
 answers. Extraction of rules from policy by LLM is deferred.
@@ -52,9 +53,9 @@ the *admission gate*. Generators never admit their own output.
 src/credit_risk/data_prep/
   __init__.py
   cli.py            # credit-risk-data-prep {fixture,gold,spike,coverage,diversity,rules}
-  fixture.py        # moved from scripts/make_fixture.py
-  gold.py           # moved from scripts/make_gold_set.py
-  spike.py          # moved from scripts/make_training_spike.py
+  fixture.py        # synthetic DuckDB fixture
+  gold.py           # frozen mechanics gold set
+  spike.py          # mechanics training spike
   taxonomy.py       # task types + situations (§2)
   coverage.py       # coverage matrix report (§2)
   diversity.py      # clone detection, family caps (§3)
@@ -65,11 +66,8 @@ configs/data_prep/
 configs/policy_rules.yaml # hand-authored registry (§5), beside the other registries
 ```
 
-References to update (verified by grep): `tests/test_analyse.py:38`,
-`tests/test_api_factsheet.py:25`, `tests/test_data_service.py:30` (run
-`scripts/make_fixture.py` by path → `python -m credit_risk.data_prep.fixture`),
-`README.md:25`, `RUN_LOCAL.md:46`, the regenerate comment written by `make_gold_set.py`.
-No shim: remove the moved scripts.
+Fixture callers use `python -m credit_risk.data_prep.fixture` or the unified CLI. No legacy
+script shims remain.
 
 ### 2. Task taxonomy as a coverage checklist
 
@@ -204,10 +202,10 @@ rules:
 2. Push; confirm the GitHub workflow passes.
 3. Remove duplicate `group_id` check in `dataset.py` (lines 36 and 45).
 
-**Phase 1 — data-prep package (no behaviour change)**
-4. Create `src/credit_risk/data_prep/` and move `make_fixture.py`, `make_gold_set.py`, `make_training_spike.py` to `fixture.py`, `gold.py`, `spike.py`.
-5. Add `cli.py` and entry point `credit-risk-data-prep` in `pyproject.toml`.
-6. Update the three tests, `README.md`, `RUN_LOCAL.md` and the gold regeneration comment; delete the old scripts.
+**Phase 1 — data-prep package (completed)**
+4. `src/credit_risk/data_prep/` owns the fixture, gold, and spike generators.
+5. `credit-risk-data-prep {fixture,gold,spike}` is the installed entry point.
+6. Tests and operating docs use the package; old scripts were removed.
 
 **Phase 2 — units**
 7. Add `unit` to `MetricValue` and registry metric definitions; populate in `factsheet.py`; bump registry version.
@@ -245,7 +243,7 @@ rules:
 | Step | Check |
 |---|---|
 | 1–3 | `uv run --no-sync pytest -q` = 418 passed / 35 skipped; `ruff check .` clean; CI green on push |
-| 4–6 | Same test counts after the move; `uv run credit-risk-data-prep fixture` produces a DuckDB identical (hash) to the old script with the same `--seed`; `grep -rn make_fixture` returns nothing stale |
+| 4–6 | Existing fixture consumers pass; the unified fixture and gold commands are covered; no legacy script remains |
 | 7 | Every `calculated_metrics` entry in a built factsheet has a non-null `unit` |
 | 8–11 | Payload with unknown `task_type` rejected; 51 cases in one family fail build; same family in train and test fails; digits-only variants collapse to one skeleton; a trigger family without a near-miss fails |
 | 12–14 | Wrong `observed`, wrong unit, threshold absent from evidence, or wrong `holds` each rejected; a correct non-extractive numeric claim is admitted without `semantic_review`; prompt-alignment tests pass on the new version |

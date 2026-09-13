@@ -48,7 +48,7 @@ the persisted Qdrant volume.
 
 ```sh
 docker compose stop api data-service
-uv run python scripts/make_fixture.py --out data/curated/credit_risk.duckdb
+uv run credit-risk-data-prep fixture --out data/curated/credit_risk.duckdb
 docker compose up -d data-service api
 ```
 
@@ -138,7 +138,7 @@ uv run --no-sync pytest -q
 
 ```sh
 uv run python scripts/setup_local.py
-uv run python scripts/make_fixture.py --out data/curated/credit_risk.duckdb
+uv run credit-risk-data-prep fixture --out data/curated/credit_risk.duckdb
 ```
 
 **3. Create the phase-2 Dataset registry files.** Run:

@@ -8,7 +8,7 @@ for cases written by a credit SME against real regulation.
 Frozen means frozen: the file records a content hash and the loader refuses to run if the
 cases have moved. Re-run this script when a change is intended.
 
-    uv run python scripts/make_gold_set.py
+    uv run credit-risk-data-prep gold
 """
 from __future__ import annotations
 
@@ -103,16 +103,16 @@ CASES = [
 ]
 
 
-def main() -> None:
+def main(argv=None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path,
                         default=Path("data/evaluation/gold_set.jsonl"))
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     args.out.parent.mkdir(parents=True, exist_ok=True)
 
     with args.out.open("w", encoding="utf-8") as handle:
         handle.write("# Frozen gold evaluation set. Never used for training.\n")
-        handle.write("# Regenerate with scripts/make_gold_set.py when a change is intended.\n")
+        handle.write("# Regenerate with credit-risk-data-prep gold when a change is intended.\n")
         for case in CASES:
             handle.write(json.dumps(case, ensure_ascii=False) + "\n")
 

@@ -1,9 +1,9 @@
 plan_version: 1
-current_phase: 2
-next_phase: 2
+current_phase: 3
+next_phase: 3
 last_verified:
   command: uv lock --check && uv run ruff check . && uv run pytest -q
-  tests_passed: 425
+  tests_passed: 427
   tests_skipped: 35
   subtests_passed: 9
   ruff: passed
@@ -29,9 +29,11 @@ phases:
   - id: 2
     name: Consolidate data preparation
     dependencies: [1]
-    status: not_started
-    completed_at: null
-    evidence: []
+    status: completed
+    completed_at: "2026-09-13"
+    evidence:
+      - "cli:credit-risk-data-prep fixture|gold|spike"
+      - "test:tests/test_data_prep.py"
   - id: 3
     name: Add metric units
     dependencies: [2]

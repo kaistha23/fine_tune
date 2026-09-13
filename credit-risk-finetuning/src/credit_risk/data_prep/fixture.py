@@ -8,7 +8,7 @@ lands 5 days later and the risk models run 10 days later. That makes the leakage
 observable - a query as at 2025-12-31 sees 11 months, not 12, because December's data was
 not yet known.
 
-    uv run python scripts/make_fixture.py
+    uv run credit-risk-data-prep fixture
 """
 from __future__ import annotations
 
@@ -147,7 +147,7 @@ def build(seed: int, n_obligors: int):
     return obligor_rows, facility_rows
 
 
-def main() -> None:
+def main(argv=None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path, default=Path("data/curated/credit_risk.duckdb"))
     # 300 obligors is not arbitrary: the cohort floor in the schema registry suppresses
@@ -156,7 +156,7 @@ def main() -> None:
     # cohort query correctly returns nothing, which makes the feature untestable.
     parser.add_argument("--obligors", type=int, default=300)
     parser.add_argument("--seed", type=int, default=17)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     obligor_rows, facility_rows = build(args.seed, args.obligors)
     args.out.parent.mkdir(parents=True, exist_ok=True)

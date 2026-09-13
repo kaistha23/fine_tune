@@ -27,7 +27,7 @@ REGISTRY = ROOT / "configs" / "schema_registry.yaml"
 def ensure_fixture() -> None:
     if not FIXTURE.is_file():
         subprocess.run(
-            [sys.executable, str(ROOT / "scripts" / "make_fixture.py")],
+            [sys.executable, "-m", "credit_risk.data_prep.fixture"],
             cwd=ROOT,
             check=True,
             capture_output=True,

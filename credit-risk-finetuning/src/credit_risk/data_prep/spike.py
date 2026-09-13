@@ -1,5 +1,6 @@
 """100 synthetic mechanics-only examples. Not SME-approved credit training data."""
 
+import argparse
 import json
 from datetime import date
 from pathlib import Path
@@ -9,7 +10,9 @@ import yaml
 from credit_risk.dataset import build_dataset
 
 
-def main():
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.parse_args(argv)
     root = Path("outputs/spike-v3")
     if root.exists():
         raise ValueError("Spike directory already exists")

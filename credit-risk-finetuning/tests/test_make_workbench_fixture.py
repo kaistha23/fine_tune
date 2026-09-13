@@ -14,7 +14,8 @@ def test_generated_local_dataset_is_registrable_and_targets_are_admissible(tmp_p
     subprocess.run(
         [
             sys.executable,
-            str(ROOT / "scripts/make_fixture.py"),
+            "-m",
+            "credit_risk.data_prep.fixture",
             "--out",
             str(source),
             "--obligors",
