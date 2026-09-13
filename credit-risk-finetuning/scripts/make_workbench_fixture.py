@@ -17,10 +17,22 @@ from credit_risk.schemas import CreditResponse, QueryPlan, SupportedClaim
 from credit_risk.workbench.contracts import inspect_dataset
 
 SPLIT_TEMPLATES = {
-    "train": "Report the current credit stage from the supplied factsheet.",
-    "validation": "State the obligor's current stage using the supplied factsheet.",
-    "test": "Identify the current stage and cite the supplied factsheet.",
-    "oot": "Give the current stage visible at the stated as-of date.",
+    "train": (
+        "Report the current credit stage from the supplied factsheet.",
+        "Read the supplied factsheet and state the obligor's current credit stage.",
+    ),
+    "validation": (
+        "State the obligor's current stage using the supplied factsheet.",
+        "What current credit stage is recorded for this obligor?",
+    ),
+    "test": (
+        "Identify the current stage and cite the supplied factsheet.",
+        "Return the obligor's current stage with its factsheet citation.",
+    ),
+    "oot": (
+        "Give the current stage visible at the stated as-of date.",
+        "At this as-of date, which credit stage does the factsheet show?",
+    ),
 }
 
 
@@ -45,7 +57,9 @@ def rows_for(con, obligor_id: str, as_of: date) -> list[dict]:
     return [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]
 
 
-def make_case(con, identity: tuple[str, str, str], split: str, source_hash: str) -> dict:
+def make_case(
+    con, identity: tuple[str, str, str], split: str, source_hash: str, template_variant: int
+) -> dict:
     obligor_id, portfolio, jurisdiction = identity
     as_of = date(2026, 1, 15) if split == "oot" else date(2025, 12, 31)
     plan = QueryPlan(
@@ -84,7 +98,7 @@ def make_case(con, identity: tuple[str, str, str], split: str, source_hash: str)
             "fact_id": f"{case_id}-stage",
             "metric": "stage",
             "value": stage,
-            "unit": None,
+            "unit": "stage",
             "currency": None,
             "effective_date": latest_date.isoformat(),
             "source_id": case_id,
@@ -97,7 +111,7 @@ def make_case(con, identity: tuple[str, str, str], split: str, source_hash: str)
         "task_type": "factsheet",
         "situation": "base",
         "split": split,
-        "question": SPLIT_TEMPLATES[split],
+        "question": SPLIT_TEMPLATES[split][template_variant],
         "portfolio": portfolio,
         "jurisdiction": jurisdiction,
         "as_of_date": as_of.isoformat(),
@@ -114,7 +128,7 @@ def make_case(con, identity: tuple[str, str, str], split: str, source_hash: str)
         "provenance": {
             "classification": "synthetic",
             "source_snapshot_hash": source_hash,
-            "template_family": f"local-stage-{split}-v1",
+            "template_family": f"local-stage-{split}-v2-{template_variant + 1}",
             "transformations": [
                 "deterministic-local-fixture",
                 "factsheet-from-governed-calculators",
@@ -153,8 +167,12 @@ def build(source: Path, output: Path, version: str, counts: dict[str, int]) -> d
                 path = output / f"{split}.jsonl"
                 path.write_text(
                     "".join(
-                        json.dumps(make_case(con, row, split, source_hash), allow_nan=False) + "\n"
-                        for row in selected
+                        json.dumps(
+                            make_case(con, row, split, source_hash, index % 2),
+                            allow_nan=False,
+                        )
+                        + "\n"
+                        for index, row in enumerate(selected)
                     )
                 )
                 splits[split] = {"file": path.name, "sha256": sha256(path)}

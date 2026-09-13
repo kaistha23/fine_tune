@@ -51,9 +51,12 @@ def test_generated_local_dataset_is_registrable_and_targets_are_admissible(tmp_p
     )
     inspected = inspect_dataset(output / "manifest.json")
     assert inspected["counts"] == {"train": 4, "validation": 2, "test": 2, "oot": 2}
+    assert inspected["diversity"]["passed"] is True
+    assert max(inspected["diversity"]["template_family_counts"].values()) <= 2
     version = default_version("credit_analysis")
     for raw in inspected["cases"]:
         case = Case.model_validate(raw)
+        assert case.fact_records[0].unit == "stage"
         if case.target is not None:
             _, failures, parsed = assess_training_target(case, case.target, version)
             assert parsed and not failures
