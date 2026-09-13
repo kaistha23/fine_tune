@@ -90,6 +90,7 @@ class QueryPlan(BaseModel):
 
 class MetricValue(BaseModel):
     value: float | int | str | bool | None
+    unit: str = Field(min_length=1, max_length=32)
     formula_id: str | None = None
     source_columns: list[str] = Field(default_factory=list)
     missing_data_flag: bool = False

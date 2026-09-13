@@ -1,4 +1,4 @@
-version: "1.3.0"
+version: "1.4.0"
 default_deny: true
 
 # Columns that carry point-in-time semantics. Every compiled query is filtered on
@@ -65,43 +65,52 @@ tables:
 # entity_grain is default-deny: a metric may only be requested at a grain it declares.
 metrics:
   current_ratio:
+    unit: x
     portfolios: [sme, corporate]
     entity_grain: [obligor_month]
     dependencies: [current_assets, current_liabilities]
     formula_id: ratio.current_ratio.v2
   net_debt_to_ebitda:
+    unit: x
     portfolios: [sme, corporate]
     entity_grain: [obligor_month]
     dependencies: [total_debt, cash, ebitda]
     formula_id: ratio.net_debt_to_ebitda.v2
   dscr:
+    unit: x
     portfolios: [sme, corporate]
     entity_grain: [obligor_month]
     dependencies: [operating_cash_flow, debt_service]
     formula_id: ratio.dscr.v2
   interest_coverage:
+    unit: x
     portfolios: [sme, corporate]
     entity_grain: [obligor_month]
     dependencies: [ebitda, interest_expense]
     formula_id: ratio.interest_coverage.v2
   utilisation_pct:
+    unit: pct
     portfolios: [retail, sme, corporate]
     entity_grain: [obligor_month, facility_month]
     dependencies: [outstanding, facility_limit]
     formula_id: ratio.utilisation.v2
   pit_pd:
+    unit: probability
     portfolios: [retail, sme, corporate]
     entity_grain: [obligor_month]
     source_column: pit_pd
   internal_rating:
+    unit: rating_grade
     portfolios: [retail, sme, corporate]
     entity_grain: [obligor_month]
     source_column: internal_rating
   stage:
+    unit: stage
     portfolios: [retail, sme, corporate]
     entity_grain: [obligor_month, facility_month]
     source_column: stage
   days_past_due:
+    unit: days
     portfolios: [retail, sme, corporate]
     entity_grain: [obligor_month, facility_month]
     source_column: days_past_due

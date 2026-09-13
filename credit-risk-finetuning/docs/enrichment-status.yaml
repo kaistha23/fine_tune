@@ -1,9 +1,9 @@
 plan_version: 1
-current_phase: 3
-next_phase: 3
+current_phase: 4
+next_phase: 4
 last_verified:
   command: uv lock --check && uv run ruff check . && uv run pytest -q
-  tests_passed: 427
+  tests_passed: 434
   tests_skipped: 35
   subtests_passed: 9
   ruff: passed
@@ -37,9 +37,11 @@ phases:
   - id: 3
     name: Add metric units
     dependencies: [2]
-    status: not_started
-    completed_at: null
-    evidence: []
+    status: completed
+    completed_at: "2026-09-13"
+    evidence:
+      - "schema:configs/schema_registry.yaml@1.4.0"
+      - "test:tests/test_metric_units.py"
   - id: 4
     name: Add taxonomy, coverage, and diversity
     dependencies: [3]

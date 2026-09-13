@@ -3,7 +3,7 @@
 ## Context
 
 The audit's pitfalls were mostly fixed in the current working tree on
-`data_prep_code_updates`. Verified on that tree: **427 passed, 35 skipped,
+`data_prep_code_updates`. Verified on that tree: **434 passed, 35 skipped,
 `ruff check .` clean**, CI and pre-commit added. What is still missing is on the **data**
 side: the model is trained and gated on 8 gold cases, thresholds live only in policy prose,
 numbers carry no units, nothing detects template clones, and data-generation code is spread
@@ -31,7 +31,7 @@ answers. Extraction of rules from policy by LLM is deferred.
 | No CI | Fixed — `.github/workflows/credit-risk.yml` (untracked) |
 | **Work uncommitted** (41 modified, 17 untracked) | **Open** |
 | **Gold set = 8 cases** vs `MIN_ELIGIBLE = 30` per gated slice | **Open** — every gate reports insufficient |
-| **No `unit` on `MetricValue`** | **Open** |
+| **No `unit` on `MetricValue`** | **Fixed** — required units, registry 1.4.0 |
 | **Seed dataset has no template-family leakage check or cap** | **Open** (workbench path only) |
 | Workbench token via `GET /api/session`; owner-bound approval; self-certifying workbench feedback; open `/docs`; no SQLite migrations | Open — out of scope here, listed for tracking |
 
@@ -207,8 +207,8 @@ rules:
 5. `credit-risk-data-prep {fixture,gold,spike}` is the installed entry point.
 6. Tests and operating docs use the package; old scripts were removed.
 
-**Phase 2 — units**
-7. Add `unit` to `MetricValue` and registry metric definitions; populate in `factsheet.py`; bump registry version.
+**Phase 2 — units (completed)**
+7. `MetricValue`, registry 1.4.0, calculators, and direct factsheet metrics carry governed units.
 
 **Phase 3 — coverage and diversity**
 8. `taxonomy.py`: task types and situations as enums; validate payload `task_type`/`situation`.

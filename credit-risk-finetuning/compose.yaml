@@ -13,7 +13,7 @@ x-service-hardening: &service-hardening
 
 x-common-environment: &common-environment
   CR_SCHEMA_REGISTRY: /app/configs/schema_registry.yaml
-  CR_SCHEMA_REGISTRY_VERSION: "1.3.0"
+  CR_SCHEMA_REGISTRY_VERSION: "1.4.0"
   CR_ARCHITECTURE_POLICY: /app/configs/architecture_policy.yaml
   CR_ARCHITECTURE_POLICY_VERSION: "1.2.0"
   CR_SERVICE_TOKEN: ${CR_SERVICE_TOKEN:?Set CR_SERVICE_TOKEN}

@@ -8,18 +8,18 @@ from credit_risk.schemas import MetricValue
 
 
 def _ratio(numerator: float | None, denominator: float | None, formula_id: str,
-           sources: list[str]) -> MetricValue:
+           sources: list[str], unit: str = "x") -> MetricValue:
     if numerator is None or denominator is None:
-        return MetricValue(value=None, formula_id=formula_id, source_columns=sources,
+        return MetricValue(value=None, unit=unit, formula_id=formula_id, source_columns=sources,
                            missing_data_flag=True, validation_status="warning")
     if not math.isfinite(numerator) or not math.isfinite(denominator) or denominator <= 0:
-        return MetricValue(value=None, formula_id=formula_id, source_columns=sources,
+        return MetricValue(value=None, unit=unit, formula_id=formula_id, source_columns=sources,
                            validation_status="invalid")
     value = numerator / denominator
     if not math.isfinite(value):
-        return MetricValue(value=None, formula_id=formula_id, source_columns=sources,
+        return MetricValue(value=None, unit=unit, formula_id=formula_id, source_columns=sources,
                            validation_status="invalid")
-    return MetricValue(value=round(value, 6), formula_id=formula_id,
+    return MetricValue(value=round(value, 6), unit=unit, formula_id=formula_id,
                        source_columns=sources)
 
 
@@ -47,7 +47,7 @@ def interest_coverage(row: dict[str, Any]) -> MetricValue:
 
 def utilisation_pct(row: dict[str, Any]) -> MetricValue:
     result = _ratio(row.get("outstanding"), row.get("facility_limit"),
-                    "ratio.utilisation.v2", ["outstanding", "facility_limit"])
+                    "ratio.utilisation.v2", ["outstanding", "facility_limit"], "pct")
     if isinstance(result.value, (int, float)):
         value = float(result.value) * 100
         result.value = round(value, 4) if math.isfinite(value) else None
@@ -62,6 +62,18 @@ CALCULATORS: dict[str, Callable[[dict[str, Any]], MetricValue]] = {
     "dscr": dscr,
     "interest_coverage": interest_coverage,
     "utilisation_pct": utilisation_pct,
+}
+
+METRIC_UNITS = {
+    "current_ratio": "x",
+    "net_debt_to_ebitda": "x",
+    "dscr": "x",
+    "interest_coverage": "x",
+    "utilisation_pct": "pct",
+    "pit_pd": "probability",
+    "internal_rating": "rating_grade",
+    "stage": "stage",
+    "days_past_due": "days",
 }
 
 

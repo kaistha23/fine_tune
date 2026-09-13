@@ -4,7 +4,7 @@ The implementation separates training admission, serving acceptance, and indepen
 
 ## Changed contracts
 
-- Governed schema registry **1.3.0** and five ratio formula IDs ending in **`.v2`**. Nonpositive denominators and nonfinite numbers yield an invalid null value. Meaningful negative numerators remain valid. Tiny positive denominators have no invented business cutoff; overflow is invalid. Invalid metrics appear in factsheet quality flags.
+- Governed schema registry **1.4.0** records a required unit for every metric, alongside five ratio formula IDs ending in **`.v2`**. Nonpositive denominators and nonfinite numbers yield an invalid null value. Meaningful negative numerators remain valid. Tiny positive denominators have no invented business cutoff; overflow is invalid. Invalid metrics appear in factsheet quality flags.
 - Dataset format **v4.0.0** retains explicit group IDs. Feedback reports `rejected_missing_group_id`. Factsheet schemas remain unchanged.
 - Training completion manifest **v2** records baseline loss, selected loss/iteration/optimizer updates, and best/final checkpoint hashes. “Best” requires a post-update improvement and has no final-checkpoint fallback. Old best checkpoints cannot be exported as newly verified best checkpoints; a successful historical run can still be explicitly exported with `--checkpoint final`.
 - Ingestion emits **v2** chunk/citation identities containing the full heading-path identity and repeated-heading occurrence. Readable section labels remain on evidence. Old collections and historical citations are preserved.
@@ -12,7 +12,7 @@ The implementation separates training admission, serving acceptance, and indepen
 
 ## Deployment and indexing
 
-Set `CR_EMBEDDING_MODEL` to the model actually served by native oMLX, plus `CR_OMLX_API_KEY` where required. Update existing environments to `CR_SCHEMA_REGISTRY_VERSION=1.3.0`. Unknown `CR_` keys are errors. The documented `CR_TEST_*` integration-test keys remain supported.
+Set `CR_EMBEDDING_MODEL` to the model actually served by native oMLX, plus `CR_OMLX_API_KEY` where required. Update existing environments to `CR_SCHEMA_REGISTRY_VERSION=1.4.0`. Unknown `CR_` keys are errors. The documented `CR_TEST_*` integration-test keys remain supported.
 
 Hashing requires explicit `CR_OFFLINE_TEST_MODE=true`; never set that on a deployment or a qualification run. `/health` reports offline-test mode distinctly, and in normal operation returns 503 when embeddings or configured Qdrant collections/signatures are unavailable. Health checks are availability checks, not evidence-quality certification.
 
