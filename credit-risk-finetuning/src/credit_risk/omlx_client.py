@@ -23,13 +23,18 @@ class OMLXClient:
         return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
 
     def generate_credit_response(
-        self, question: str, factsheet: dict[str, Any], evidence: list[Evidence]
+        self,
+        question: str,
+        factsheet: dict[str, Any],
+        evidence: list[Evidence],
+        rule_evaluations: list[dict[str, Any]] | None = None,
     ) -> CreditResponse:
         messages = build_messages(
             question=question,
             factsheet=factsheet,
             evidence=[item.model_dump(mode="json") for item in evidence],
             response_schema=compact_json_schema(CreditResponse.model_json_schema()),
+            rule_evaluations=rule_evaluations,
         )
         # UTF-8 bytes give a conservative upper bound for byte-fallback tokenizers;
         # reserve output tokens before sending. No silent context truncation.

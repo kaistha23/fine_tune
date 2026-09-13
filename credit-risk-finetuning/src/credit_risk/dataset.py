@@ -18,7 +18,7 @@ from credit_risk.review_store import digest
 from credit_risk.schemas import CreditResponse, Evidence
 
 DEFAULT_QUESTION = "Assess the supplied credit factsheet using the supplied evidence."
-DATASET_VERSION = "v5.0.0"
+DATASET_VERSION = "v6.0.0"
 SPLITS = ("train", "valid", "test")
 
 
@@ -36,13 +36,18 @@ def build_sft_record(
     semantic_review: dict | None = None,
     situation: str = "base",
     template_family: str | None = None,
+    rule_evaluations: list[dict[str, Any]] | None = None,
 ) -> dict:
     if not case.get("group_id"):
         raise ValueError("Explicit group_id required")
     evidence = evidence or []
     response = CreditResponse.model_validate_json(target)
     check = is_admissible_training_target(
-        response, [Evidence.model_validate(e) for e in evidence], case, semantic_review
+        response,
+        [Evidence.model_validate(e) for e in evidence],
+        case,
+        semantic_review,
+        rule_evaluations,
     )
     if not check.passed:
         raise ValueError("Target failed evidence validation: " + ",".join(check.failures))
@@ -59,6 +64,7 @@ def build_sft_record(
                 "task": task_type,
                 "question": question,
                 "evidence": evidence,
+                "rule_evaluations": rule_evaluations or [],
                 "target": target,
             }
         )[:24],
@@ -70,10 +76,13 @@ def build_sft_record(
         "template_family": template_family,
         "question": question or DEFAULT_QUESTION,
         "target": json.loads(target),
+        "rule_evaluations": rule_evaluations or [],
         "jurisdiction": case["jurisdiction"],
         "as_of_date": case["as_of_date"],
         "messages": [
-            *build_messages(question or DEFAULT_QUESTION, case, evidence),
+            *build_messages(
+                question or DEFAULT_QUESTION, case, evidence, rule_evaluations=rule_evaluations
+            ),
             {"role": "assistant", "content": target},
         ],
         "split": stable_split(group),
@@ -134,6 +143,7 @@ def build_dataset(payloads, output: Path, cutoff: date, exclusions: dict | None 
             payload.get("semantic_review"),
             payload.get("situation", case.get("situation")),
             family,
+            payload.get("rule_evaluations", []),
         )
         content = digest(record["messages"])
         if content in seen:

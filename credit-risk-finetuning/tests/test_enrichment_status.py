@@ -29,7 +29,7 @@ def test_enrichment_tracker_is_consistent():
         if phase["status"] not in ("completed", "blocked")
         and all(by_id[item]["status"] == "completed" for item in phase["dependencies"])
     ]
-    assert tracker["next_phase"] == min(eligible)
+    assert tracker["next_phase"] == (min(eligible) if eligible else None)
     verified = tracker["last_verified"]
     assert verified["tests_passed"] > 0
     assert verified["tests_skipped"] >= 0

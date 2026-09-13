@@ -47,6 +47,7 @@ class Case(BaseModel):
     facts: dict[str, Any] = Field(default_factory=dict)
     fact_records: list[TypedFact] = Field(default_factory=list)
     evidence: list[dict] = Field(default_factory=list)
+    rule_evaluations: list[dict] = Field(default_factory=list)
     target: dict | None = None
     expected: dict = Field(default_factory=dict)
     consistency_paths: list[str] = Field(default_factory=list)
@@ -71,6 +72,7 @@ class Case(BaseModel):
                 "facts": self.facts,
                 "fact_records": [fact.model_dump(mode="json") for fact in self.fact_records],
                 "evidence": self.evidence,
+                "rule_evaluations": self.rule_evaluations,
                 "task": self.task,
                 "task_type": self.task_type,
                 "situation": self.situation,
@@ -109,6 +111,7 @@ def messages(case, version):
                         "factsheet": case.facts,
                         "fact_records": [fact.model_dump(mode="json") for fact in case.fact_records],
                         "evidence": case.evidence,
+                        "rule_evaluations": case.rule_evaluations,
                     },
                     "response_schema": version["schema"],
                 },

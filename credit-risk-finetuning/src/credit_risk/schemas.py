@@ -226,6 +226,7 @@ class InteractionRecord(BaseModel):
     question: str
     factsheet: dict[str, Any]
     evidence: list[dict[str, Any]] = Field(default_factory=list)
+    rule_evaluations: list[dict[str, Any]] = Field(default_factory=list)
     answer_status: AnswerStatus
     # The model's answer as served, serialised. None when the path abstained before the
     # model was reached, which is itself a correctable behaviour.
@@ -260,6 +261,7 @@ class FeedbackRecord(BaseModel):
     input_question: str = ""
     input_factsheet: dict[str, Any] | None = None
     input_evidence: list[dict[str, Any]] = Field(default_factory=list)
+    rule_evaluations: list[dict[str, Any]] = Field(default_factory=list)
     original_output: str
     error_labels: list[
         Literal[

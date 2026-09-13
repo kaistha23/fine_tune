@@ -155,7 +155,13 @@ def assess(case, answer, version, query_checker=None):
         try:
             response = CreditResponse.model_validate(answer)
             evidence = [Evidence.model_validate(e) for e in case.evidence]
-            check = validate_output(response, evidence, case.facts.get("case_id"), case.facts)
+            check = validate_output(
+                response,
+                evidence,
+                case.facts.get("case_id"),
+                case.facts,
+                case.rule_evaluations,
+            )
             metrics["extractive_support_heuristic"] = float(check.passed)
             failures.extend(check.failures)
             refs = [eid for fact in response.facts for eid in fact.evidence_ids]
@@ -244,6 +250,7 @@ def assess_training_target(case, answer, version, semantic_review=None):
             CreditResponse.model_validate(parsed["answer"]),
             [Evidence.model_validate(e) for e in case.evidence], case.facts,
             semantic_review or case.provenance.get("semantic_review"),
+            case.rule_evaluations,
         )
         metrics["training_target_admissible"] = float(admission.passed)
         if admission.passed:

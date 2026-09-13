@@ -42,9 +42,51 @@ def report_command(kind, argv):
         raise SystemExit(1)
 
 
+def rules_command(argv):
+    parser = argparse.ArgumentParser(prog="credit-risk-data-prep rules")
+    parser.add_argument("input", type=Path, help="JSON containing factsheet and evidence")
+    parser.add_argument("--registry", type=Path, default=Path("configs/policy_rules.yaml"))
+    parser.add_argument(
+        "--schema-registry", type=Path, default=Path("configs/schema_registry.yaml")
+    )
+    parser.add_argument("--out", type=Path)
+    args = parser.parse_args(argv)
+    from credit_risk.data_prep.rules import PolicyRuleRegistry, evaluate_rules
+    from credit_risk.query_guard import SchemaRegistry
+    from credit_risk.schemas import CreditFactsheet, Evidence
+
+    payload = json.loads(args.input.read_text())
+    registry = PolicyRuleRegistry(
+        args.registry, schema_registry=SchemaRegistry(args.schema_registry)
+    )
+    evaluations = evaluate_rules(
+        registry,
+        CreditFactsheet.model_validate(payload["factsheet"]),
+        [Evidence.model_validate(item) for item in payload.get("evidence", [])],
+    )
+    report = {
+        "registry_version": registry.version,
+        "evaluations": [item.model_dump(mode="json") for item in evaluations],
+        "mandatory_unevaluable": [
+            item.rule_id
+            for item in evaluations
+            if item.mandatory and item.status == "unevaluable"
+        ],
+    }
+    report["passed"] = not report["mandatory_unevaluable"]
+    rendered = json.dumps(report, indent=2) + "\n"
+    if args.out:
+        args.out.write_text(rendered)
+    print(rendered, end="")
+    if not report["passed"]:
+        raise SystemExit(1)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("fixture", "gold", "spike", "coverage", "diversity"))
+    parser.add_argument(
+        "command", choices=("fixture", "gold", "spike", "coverage", "diversity", "rules")
+    )
     args, remaining = parser.parse_known_args(argv)
     if args.command == "fixture":
         from credit_risk.data_prep.fixture import main as command
@@ -52,6 +94,8 @@ def main(argv=None):
         from credit_risk.data_prep.gold import main as command
     elif args.command == "spike":
         from credit_risk.data_prep.spike import main as command
+    elif args.command == "rules":
+        return rules_command(remaining)
     else:
         return report_command(args.command, remaining)
     command(remaining)

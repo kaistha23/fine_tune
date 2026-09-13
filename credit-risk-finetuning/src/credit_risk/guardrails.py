@@ -55,6 +55,7 @@ def validate_output(
     evidence: list[Evidence],
     factsheet_case_id: str | None = None,
     factsheet: dict | None = None,
+    rule_evaluations: list | None = None,
 ) -> GuardrailResult:
     """Check every material fact against something a reviewer can open.
 
@@ -88,8 +89,15 @@ def validate_output(
         if claim.derivation:
             from credit_risk.data_prep.derivation import check_claim_derivation
 
-            derivation = check_claim_derivation(claim, factsheet or {}, evidence)
+            from credit_risk.data_prep.rules import rule_thresholds
+
+            rules = rule_thresholds(rule_evaluations or [])
+            derivation = check_claim_derivation(claim, factsheet or {}, evidence, rules)
             failures.extend(f"invalid_derivation:{reason}" for reason in derivation.failures)
+            if claim.derivation.rule_id:
+                evaluated = rules.get(claim.derivation.rule_id)
+                if evaluated and evaluated.get("holds") != claim.derivation.holds:
+                    failures.append("rule_contradiction:" + claim.derivation.rule_id)
     structured_ids = [
         evidence_id
         for item in [*response.conclusions, *response.risk_driver_details]
@@ -149,7 +157,9 @@ def is_extractive_copy(response, evidence, factsheet_case_id=None, factsheet=Non
     return validate_output(response, evidence, factsheet_case_id, factsheet)
 
 
-def is_admissible_training_target(response, evidence, factsheet, review=None):
+def is_admissible_training_target(
+    response, evidence, factsheet, review=None, rule_evaluations=None
+):
     """Permit supported paraphrases only with context-bound semantic/numeric review.
 
     The normal dataset approval and provenance requirements still apply at the builder.
@@ -157,7 +167,9 @@ def is_admissible_training_target(response, evidence, factsheet, review=None):
     """
     from credit_risk.review_store import digest
 
-    check = validate_output(response, evidence, factsheet.get("case_id"), factsheet)
+    check = validate_output(
+        response, evidence, factsheet.get("case_id"), factsheet, rule_evaluations
+    )
     hard = [f for f in check.failures if f not in {"unsupported_claim", "unverified_narrative"}]
     soft = [f for f in check.failures if f in {"unsupported_claim", "unverified_narrative"}]
     if "unsupported_claim" in soft:

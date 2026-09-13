@@ -32,7 +32,7 @@ def _number(value: Any) -> float | None:
     return converted if math.isfinite(converted) else None
 
 
-def _threshold_is_cited(threshold: float, text: str) -> bool:
+def threshold_is_cited(threshold: float, text: str) -> bool:
     for token in NUMBER.findall(text):
         try:
             if math.isclose(float(token.replace(",", "")), threshold):
@@ -79,10 +79,14 @@ def check_derivation(
                 failures.append("rule_metric_mismatch")
             if rule.get("unit") != derivation.unit:
                 failures.append("rule_unit_mismatch")
+            if rule.get("operator") != derivation.operator:
+                failures.append("rule_operator_mismatch")
+            if rule.get("evidence_id") != derivation.threshold_evidence_id:
+                failures.append("rule_evidence_mismatch")
             rule_threshold = _number(rule.get("threshold"))
             if rule_threshold is None or not math.isclose(rule_threshold, derivation.threshold):
                 failures.append("rule_threshold_mismatch")
-    elif source is not None and not _threshold_is_cited(derivation.threshold, source.text):
+    elif source is not None and not threshold_is_cited(derivation.threshold, source.text):
         failures.append("threshold_not_in_evidence")
 
     observed = _number(derivation.observed)

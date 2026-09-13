@@ -1,9 +1,9 @@
 plan_version: 1
-current_phase: 6
-next_phase: 6
+current_phase: 7
+next_phase: null
 last_verified:
   command: uv lock --check && uv run ruff check . && uv run pytest -q
-  tests_passed: 451
+  tests_passed: 461
   tests_skipped: 35
   subtests_passed: 9
   ruff: passed
@@ -64,9 +64,13 @@ phases:
   - id: 6
     name: Add policy-rule evaluation
     dependencies: [5]
-    status: not_started
-    completed_at: null
-    evidence: []
+    status: completed
+    completed_at: "2026-09-13"
+    evidence:
+      - "registry:configs/policy_rules.yaml@1.0.0"
+      - "cli:credit-risk-data-prep rules"
+      - "api:mandatory unevaluable rules abstain before model call"
+      - "test:tests/test_policy_rules.py"
   - id: 7
     name: Build reviewed phase-2 data
     dependencies: [4, 6]

@@ -97,6 +97,7 @@ def build_training_batch(records: list[FeedbackRecord]) -> tuple[list[dict], dic
             [Evidence.model_validate(e) for e in record.input_evidence],
             record.input_factsheet,
             record.semantic_review,
+            record.rule_evaluations,
         )
         if not checked.passed:
             continue
@@ -113,6 +114,7 @@ def build_training_batch(records: list[FeedbackRecord]) -> tuple[list[dict], dic
                         question=record.input_question or DEFAULT_QUESTION,
                         factsheet=record.input_factsheet,
                         evidence=record.input_evidence,
+                        rule_evaluations=record.rule_evaluations,
                     ),
                     {"role": "assistant", "content": record.corrected_output},
                 ],

@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     schema_registry_version: str = "1.4.0"
     architecture_policy: Path = Path("configs/architecture_policy.yaml")
     architecture_policy_version: str = "1.2.0"
+    policy_rules: Path = Path("configs/policy_rules.yaml")
+    policy_rules_version: str = "1.0.0"
     retrieval_policy: Path = Path("configs/retrieval.yaml")
     evaluation_thresholds: Path = Path("configs/evaluation_thresholds.yaml")
     service_role: str = "api_gateway"

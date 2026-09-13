@@ -32,10 +32,13 @@ clone, template-family, split-leakage, and near-miss controls:
 ```sh
 uv run credit-risk-data-prep coverage candidate.jsonl --out coverage.json
 uv run credit-risk-data-prep diversity candidate.jsonl --out diversity.json
+uv run credit-risk-data-prep rules rule-input.json --out rule-evaluations.json
 ```
 
-Both commands exit nonzero when checks fail. Coverage defaults to
+These commands exit nonzero when checks fail. Coverage defaults to
 `configs/data_prep/coverage_targets.yaml`; `--targets` selects another reviewed matrix.
+The rules input contains a `factsheet` and its retrieved `evidence`; mandatory unevaluable
+rules fail before generation.
 
 `setup_local.py` creates private credentials only when neither `.env` nor `.reviewer-token` exists; it preserves existing configuration. Configure reviewers in `CR_REVIEWERS` as an identity map with `role` and SHA256 `token_sha256`. Never commit credentials. The service token and reviewer token serve different boundaries.
 

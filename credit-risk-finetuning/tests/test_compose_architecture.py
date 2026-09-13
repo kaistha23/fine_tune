@@ -124,6 +124,14 @@ class PinnedVersionTests(unittest.TestCase):
             str(self._environment()["CR_ARCHITECTURE_POLICY_VERSION"]), str(policy["version"])
         )
 
+    def test_the_compose_rule_pin_matches_the_rule_registry(self) -> None:
+        rules = yaml.safe_load(
+            (Path(__file__).parents[1] / "configs" / "policy_rules.yaml").read_text()
+        )
+        self.assertEqual(
+            str(self._environment()["CR_POLICY_RULES_VERSION"]), str(rules["version"])
+        )
+
     def test_settings_pin_the_same_versions_as_compose(self) -> None:
         from credit_risk.settings import Settings
 
@@ -135,6 +143,7 @@ class PinnedVersionTests(unittest.TestCase):
         self.assertEqual(
             defaults.architecture_policy_version, str(environment["CR_ARCHITECTURE_POLICY_VERSION"])
         )
+        self.assertEqual(defaults.policy_rules_version, str(environment["CR_POLICY_RULES_VERSION"]))
 
     def test_no_credential_is_a_literal_in_compose(self) -> None:
         # Tokens and keys must come from the host environment, never from the file.

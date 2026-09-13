@@ -5,6 +5,7 @@ import pytest
 from credit_risk.data_prep.derivation import check_claim_derivation
 from credit_risk.guardrails import is_admissible_training_target, validate_output
 from credit_risk.schemas import CreditResponse, Evidence, SupportedClaim
+from credit_risk.data_prep.rules import RuleEvaluation
 
 
 @pytest.fixture
@@ -67,7 +68,7 @@ def test_verified_derivation_admits_numeric_claim_without_semantic_review(factsh
     ("change", "failure"),
     [
         ({"metric": "missing"}, "metric_not_found"),
-        ({"observed": 87.0}, "observed_value_mismatch"),
+        ({"observed": 88.4}, "observed_value_mismatch"),
         ({"unit": "probability"}, "unit_mismatch"),
         ({"threshold": 84.0}, "threshold_not_in_evidence"),
         ({"holds": False}, "comparison_result_mismatch"),
@@ -106,3 +107,23 @@ def test_serving_validation_rejects_an_incorrect_derivation(factsheet, evidence)
     )
     result = validate_output(response, evidence, "CASE-1", factsheet)
     assert "invalid_derivation:comparison_result_mismatch" in result.failures
+
+
+def test_rule_bound_derivation_must_match_the_evaluated_rule(factsheet, evidence):
+    derived = claim(rule_id="sama.watchlist.utilisation.v1")
+    evaluation = RuleEvaluation(
+        rule_id="sama.watchlist.utilisation.v1",
+        metric="utilisation_pct",
+        observed=88,
+        operator="gt",
+        threshold=85,
+        unit="pct",
+        action="flag_watchlist",
+        evidence_id="SAMA-CIRC-4#7.2",
+        mandatory=True,
+        status="fired",
+        holds=True,
+    )
+    response = CreditResponse(answer_status="ANSWERED", executive_summary="", facts=[derived])
+    result = validate_output(response, evidence, "CASE-1", factsheet, [evaluation])
+    assert "invalid_derivation:rule_operator_mismatch" in result.failures

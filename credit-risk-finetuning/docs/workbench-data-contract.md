@@ -66,6 +66,7 @@ Optional/phase-dependent fields:
 | `facts` | Exact model factsheet or query-schema context; preserve numerical types and case identity. |
 | `fact_records` | Typed facts with `fact_id`, `metric`, `value`, `unit`, `currency`, `effective_date` and `source_id`. Use stable source IDs and retain the governed factsheet in `facts`. |
 | `evidence` | Evidence objects in the existing Evidence schema, including versioned IDs and text. |
+| `rule_evaluations` | Deterministic, pre-model policy-rule outcomes frozen with the case and prompt. |
 | `target` | JSON object matching the selected output schema; required for train/validation preflight. |
 | `expected` | Independent checks, described below. Absent checks do not produce perfect scores. |
 | `consistency_paths` | Dot paths into stable JSON fields, e.g. `answer_status`, `risk_drivers`, or an explicit numeric/conclusion field in a compatible schema extension. |

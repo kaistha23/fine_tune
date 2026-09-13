@@ -80,3 +80,53 @@ def test_unified_coverage_command_fails_when_required_cells_are_missing(tmp_path
     )
     with pytest.raises(SystemExit):
         main(["coverage", str(records), "--targets", str(targets)])
+
+
+def test_unified_rules_command_writes_pre_model_evaluations(tmp_path):
+    payload = {
+        "factsheet": {
+            "case_id": "C",
+            "obligor_id": "O",
+            "portfolio": "corporate",
+            "jurisdiction": "SAMA",
+            "as_of_date": "2026-01-01",
+            "observation_months": 1,
+            "current_position": {},
+            "calculated_metrics": {
+                "utilisation_pct": {
+                    "value": 88,
+                    "unit": "pct",
+                    "validation_status": "valid",
+                }
+            },
+        },
+        "evidence": [
+            {
+                "evidence_id": "SAMA-DOC-4@1.0#7.2",
+                "jurisdiction": "SAMA",
+                "document_id": "SAMA-DOC-4",
+                "document_version": "1.0",
+                "section": "7.2",
+                "text": "Watchlist escalation applies at utilisation of 85% or more.",
+                "score": 1,
+            }
+        ],
+    }
+    source = tmp_path / "rules-input.json"
+    output = tmp_path / "rules-report.json"
+    source.write_text(json.dumps(payload))
+    main(
+        [
+            "rules",
+            str(source),
+            "--registry",
+            str(ROOT / "configs/policy_rules.yaml"),
+            "--schema-registry",
+            str(ROOT / "configs/schema_registry.yaml"),
+            "--out",
+            str(output),
+        ]
+    )
+    report = json.loads(output.read_text())
+    assert report["passed"] is True
+    assert report["evaluations"][0]["status"] == "fired"
