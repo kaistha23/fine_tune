@@ -126,9 +126,25 @@ class Evidence(BaseModel):
     effective_to: date | None = None
 
 
+class Derivation(BaseModel):
+    """A deterministic comparison between a governed metric and cited threshold."""
+
+    model_config = ConfigDict(extra="forbid")
+    metric: str = Field(min_length=1, max_length=100)
+    observed: float
+    operator: Literal["gt", "gte", "lt", "lte", "eq"]
+    threshold: float
+    unit: str = Field(min_length=1, max_length=32)
+    threshold_evidence_id: str = Field(min_length=1, max_length=256)
+    rule_id: str | None = Field(default=None, max_length=256)
+    holds: bool
+
+
 class SupportedClaim(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     statement: str
     evidence_ids: list[str] = Field(default_factory=list)
+    derivation: Derivation | None = None
 
 
 class InferenceClaim(BaseModel):

@@ -1,9 +1,9 @@
 plan_version: 1
-current_phase: 5
-next_phase: 5
+current_phase: 6
+next_phase: 6
 last_verified:
   command: uv lock --check && uv run ruff check . && uv run pytest -q
-  tests_passed: 441
+  tests_passed: 451
   tests_skipped: 35
   subtests_passed: 9
   ruff: passed
@@ -55,9 +55,12 @@ phases:
   - id: 5
     name: Add deterministic derivations
     dependencies: [3, 4]
-    status: not_started
-    completed_at: null
-    evidence: []
+    status: completed
+    completed_at: "2026-09-13"
+    evidence:
+      - "schema:credit_risk.schemas.Derivation"
+      - "contract:prompt-v4.0.0,dataset-v5.0.0,recommended-v3"
+      - "test:tests/test_derivation.py"
   - id: 6
     name: Add policy-rule evaluation
     dependencies: [5]

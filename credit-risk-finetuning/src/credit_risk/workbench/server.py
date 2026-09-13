@@ -123,7 +123,7 @@ def create_app(root=None, start_scheduler=True):
             for version in store.list("version")
         ):
             recommended.update(
-                name="Recommended structured contract v2",
+                name="Recommended structured contract v3",
                 parent=store.active_version(task),
             )
             store.add("version", recommended)

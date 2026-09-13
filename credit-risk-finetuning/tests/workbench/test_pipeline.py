@@ -252,10 +252,12 @@ def test_new_recommended_contract_is_saved_without_implicit_activation(tmp_path)
     recommended = [
         version
         for version in reloaded.list("version")
-        if version["name"] == "Recommended structured contract v2"
+        if version["name"] == "Recommended structured contract v3"
     ]
     assert len(recommended) == 1
     assert "risk_driver_details" in recommended[0]["schema"]["properties"]
+    claim = recommended[0]["schema"]["$defs"]["SupportedClaim"]
+    assert "derivation" in claim["properties"]
 
 
 def test_prompt_contains_output_schema():

@@ -85,6 +85,11 @@ def validate_output(
         for evidence_id in claim.evidence_ids:
             if evidence_id not in available_ids:
                 failures.append(f"unknown_citation:{evidence_id}")
+        if claim.derivation:
+            from credit_risk.data_prep.derivation import check_claim_derivation
+
+            derivation = check_claim_derivation(claim, factsheet or {}, evidence)
+            failures.extend(f"invalid_derivation:{reason}" for reason in derivation.failures)
     structured_ids = [
         evidence_id
         for item in [*response.conclusions, *response.risk_driver_details]
@@ -155,6 +160,24 @@ def is_admissible_training_target(response, evidence, factsheet, review=None):
     check = validate_output(response, evidence, factsheet.get("case_id"), factsheet)
     hard = [f for f in check.failures if f not in {"unsupported_claim", "unverified_narrative"}]
     soft = [f for f in check.failures if f in {"unsupported_claim", "unverified_narrative"}]
+    if "unsupported_claim" in soft:
+        from credit_risk.data_prep.derivation import check_claim_derivation
+
+        unsupported_without_derivation = any(
+            not supported_text(
+                claim.statement,
+                " ".join(
+                    factsheet_statements(factsheet)
+                    if evidence_id == factsheet.get("case_id")
+                    else next((item.text for item in evidence if item.evidence_id == evidence_id), "")
+                    for evidence_id in claim.evidence_ids
+                ),
+            )
+            and not check_claim_derivation(claim, factsheet, evidence).passed
+            for claim in response.facts
+        )
+        if not unsupported_without_derivation:
+            soft.remove("unsupported_claim")
     review = review or {}
     bound = digest({"target": response.model_dump(mode="json"), "factsheet": factsheet,
                     "evidence": [e.model_dump(mode="json") for e in evidence]})

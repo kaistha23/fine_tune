@@ -5,7 +5,7 @@ The implementation separates training admission, serving acceptance, and indepen
 ## Changed contracts
 
 - Governed schema registry **1.4.0** records a required unit for every metric, alongside five ratio formula IDs ending in **`.v2`**. Nonpositive denominators and nonfinite numbers yield an invalid null value. Meaningful negative numerators remain valid. Tiny positive denominators have no invented business cutoff; overflow is invalid. Invalid metrics appear in factsheet quality flags.
-- Dataset format **v4.0.0** retains explicit group IDs. Feedback reports `rejected_missing_group_id`. Factsheet schemas remain unchanged.
+- Dataset format **v5.0.0** retains explicit group IDs and records prompt contract **v4.0.0**. `SupportedClaim` may carry a deterministic derivation bound to a valid factsheet metric, its governed unit, a cited threshold, operator and comparison result. Feedback reports `rejected_missing_group_id`. Earlier adapters remain historical and are not directly comparable under the changed prompt/schema contract.
 - Training completion manifest **v2** records baseline loss, selected loss/iteration/optimizer updates, and best/final checkpoint hashes. “Best” requires a post-update improvement and has no final-checkpoint fallback. Old best checkpoints cannot be exported as newly verified best checkpoints; a successful historical run can still be explicitly exported with `--checkpoint final`.
 - Ingestion emits **v2** chunk/citation identities containing the full heading-path identity and repeated-heading occurrence. Readable section labels remain on evidence. Old collections and historical citations are preserved.
 - Evaluation reports **v2** replace `faithfulness` with `extractive_support_rate`. Historical reports must be rerun for comparisons; do not relabel old results. The CLI seals reports with a content hash and refuses to overwrite them.
@@ -28,6 +28,13 @@ This creates entirely new collections, verifies every citation payload and docum
 Both retrieval arms generate candidates. All candidates pass the same absolute cosine threshold and access checks before the top-k/context budget is filled. RRF ranks results only; its values are not support probabilities.
 
 ## Reviewed training paraphrases
+
+A numeric threshold claim with a verified `derivation` does not need a separate numeric
+review waiver. The checker resolves the metric from `calculated_metrics`, requires valid
+status and exact units, matches the observed value, resolves the threshold citation, and
+recomputes the operator result. Invalid metrics, nonfinite values, unresolved rule IDs, and
+contradictory results fail serving and training admission. Narrative claims still use the
+review process below.
 
 Exact supported extracts retain the conservative admission path. A non-extractive target additionally requires a `semantic_review` object:
 

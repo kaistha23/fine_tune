@@ -25,7 +25,7 @@ from typing import Any
 
 # Bump whenever SYSTEM_PROMPT or the user-message shape changes. Recorded in dataset
 # provenance so a checkpoint can be traced to the prompt it was trained under.
-PROMPT_VERSION = "v3.0.0"
+PROMPT_VERSION = "v4.0.0"
 
 SYSTEM_PROMPT = (
     "You are a credit-risk advisory copilot. Use only the supplied factsheet and evidence. "
@@ -33,7 +33,9 @@ SYSTEM_PROMPT = (
     "thresholds or customer facts. Every fact must cite: use an evidence_id from the "
     "evidence list for anything drawn from policy or regulation, and the factsheet's "
     "case_id for anything drawn from the obligor's own data. Identify missing information "
-    "and abstain when evidence is insufficient. Return JSON matching the supplied schema. "
+    "and abstain when evidence is insufficient. For a numeric threshold comparison, include "
+    "a derivation using a valid calculated metric, its exact unit, the cited threshold, "
+    "operator and comparison result. Return JSON matching the supplied schema. "
     "Set human_approval_required=true for recommendations."
 )
 

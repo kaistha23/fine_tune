@@ -3,7 +3,7 @@
 ## Context
 
 The audit's pitfalls were mostly fixed in the current working tree on
-`data_prep_code_updates`. Verified on that tree: **441 passed, 35 skipped,
+`data_prep_code_updates`. Verified on that tree: **451 passed, 35 skipped,
 `ruff check .` clean**, CI and pre-commit added. What is still missing is on the **data**
 side: the model is trained and gated on 8 gold cases, thresholds live only in policy prose,
 and no reviewed phase-2 dataset reaches the coverage gate. Governed units and consolidated
@@ -217,7 +217,7 @@ rules:
 10. `diversity.py`: clone skeleton, shared `MAX_PER_TEMPLATE_FAMILY`, near-miss requirement.
 11. Seed `dataset.py`: template-family split-leakage check and family cap; manifest counts.
 
-**Phase 4 — derivation**
+**Phase 4 — derivation (completed)**
 12. `Derivation` schema + `SupportedClaim.derivation`.
 13. `data_prep/derivation.py` `check_derivation`; wire into `is_admissible_training_target`.
 14. Bump `PROMPT_VERSION` and `DATASET_VERSION`; update prompt-alignment golden tests.
@@ -243,7 +243,7 @@ rules:
 
 | Step | Check |
 |---|---|
-| 1–3 | `uv lock --check`; `uv run ruff check .`; `uv run pytest -q` = 441 passed / 35 skipped |
+| 1–3 | `uv lock --check`; `uv run ruff check .`; `uv run pytest -q` = 451 passed / 35 skipped |
 | 4–6 | Existing fixture consumers pass; the unified fixture and gold commands are covered; no legacy script remains |
 | 7 | Every `calculated_metrics` entry in a built factsheet has a non-null `unit` |
 | 8–11 | Payload with unknown `task_type` rejected; 51 cases in one family fail build; same family in train and test fails; digits-only variants collapse to one skeleton; a trigger family without a near-miss fails |

@@ -18,7 +18,7 @@ from credit_risk.review_store import digest
 from credit_risk.schemas import CreditResponse, Evidence
 
 DEFAULT_QUESTION = "Assess the supplied credit factsheet using the supplied evidence."
-DATASET_VERSION = "v4.0.0"
+DATASET_VERSION = "v5.0.0"
 SPLITS = ("train", "valid", "test")
 
 
