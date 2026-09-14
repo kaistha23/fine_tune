@@ -10,6 +10,7 @@ data/standardised/
 data/curated/
 data/feedback/
 data/training/
+data/workbench/
 models/
 adapters/
 outputs/

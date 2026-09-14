@@ -62,19 +62,29 @@ class Store:
             raise ValueError(f"Unknown {kind} ID")
         return json.loads(row[0])
 
-    def update_job(self, identity, **values):
+    # Only operational state is mutable: job, question and session-item status. Datasets,
+    # versions, answers, feedback and memory records stay immutable through add().
+    MUTABLE = ("job", "question", "session_item")
+
+    def update(self, kind, identity, **values):
+        if kind not in self.MUTABLE:
+            raise ValueError(f"{kind} records are immutable")
         with self.connect() as con:
             con.execute("BEGIN IMMEDIATE")
             row = con.execute(
-                "SELECT payload FROM items WHERE kind='job' AND id=?", (identity,)
+                "SELECT payload FROM items WHERE kind=? AND id=?", (kind, identity)
             ).fetchone()
             if row is None:
-                raise ValueError("Unknown job")
-            job = {**json.loads(row[0]), **values}
+                raise ValueError("Unknown job" if kind == "job" else f"Unknown {kind}")
+            record = {**json.loads(row[0]), **values}
             con.execute(
-                "UPDATE items SET payload=? WHERE kind='job' AND id=?", (json.dumps(job), identity)
+                "UPDATE items SET payload=? WHERE kind=? AND id=?",
+                (json.dumps(record, allow_nan=False), kind, identity),
             )
-        return job
+        return record
+
+    def update_job(self, identity, **values):
+        return self.update("job", identity, **values)
 
     def active_version(self, task, version=None):
         with self.connect() as con:

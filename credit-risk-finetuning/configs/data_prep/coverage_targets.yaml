@@ -1,0 +1,11 @@
+version: "1.0.0"
+minimum_per_cell: 30
+required_cells:
+  - {task_type: claim_verification, portfolio: corporate, jurisdiction: SAMA, situation: base}
+  - {task_type: claim_verification, portfolio: corporate, jurisdiction: SAMA, situation: near_miss}
+  - {task_type: claim_verification, portfolio: corporate, jurisdiction: CBUAE, situation: base}
+  - {task_type: claim_verification, portfolio: corporate, jurisdiction: CBUAE, situation: near_miss}
+  - {task_type: policy_qa, portfolio: sme, jurisdiction: SAMA, situation: wrong_jurisdiction}
+  - {task_type: policy_qa, portfolio: sme, jurisdiction: CBUAE, situation: superseded_policy}
+  - {task_type: metric_interpretation, portfolio: corporate, jurisdiction: SAMA, situation: grain_trap}
+  - {task_type: ews_analysis, portfolio: retail, jurisdiction: SAMA, situation: missing_field}

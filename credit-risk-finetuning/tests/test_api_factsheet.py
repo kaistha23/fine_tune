@@ -22,7 +22,7 @@ FIXTURE = ROOT / "data" / "curated" / "credit_risk.duckdb"
 def ensure_fixture() -> None:
     if not FIXTURE.is_file():
         subprocess.run(
-            [sys.executable, str(ROOT / "scripts" / "make_fixture.py")],
+            [sys.executable, "-m", "credit_risk.data_prep.fixture"],
             cwd=ROOT,
             check=True,
             capture_output=True,
@@ -92,7 +92,7 @@ class FactsheetRouteTests(unittest.TestCase):
         self.assertEqual(sheet["observation_months"], 12)
         self.assertIn("current_ratio", sheet["calculated_metrics"])
         self.assertEqual(
-            sheet["calculated_metrics"]["current_ratio"]["formula_id"], "ratio.current_ratio.v1"
+            sheet["calculated_metrics"]["current_ratio"]["formula_id"], "ratio.current_ratio.v2"
         )
 
     def test_factsheet_is_smaller_than_the_rows_it_came_from(self) -> None:

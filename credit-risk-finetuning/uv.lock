@@ -306,7 +306,7 @@ requires-dist = [
     { name = "qdrant-client", marker = "extra == 'rag'", specifier = ">=1.19,<1.20" },
     { name = "ragas", marker = "extra == 'evaluation'", specifier = ">=0.2" },
     { name = "rank-bm25", marker = "extra == 'rag'", specifier = ">=0.2.2" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.9" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = "==0.16.6" },
     { name = "uvicorn", specifier = ">=0.34" },
 ]
 provides-extras = ["data", "documents", "rag", "training", "embedding", "evaluation", "dev"]

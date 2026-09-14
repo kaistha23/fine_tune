@@ -1,0 +1,100 @@
+plan_version: 1
+current_phase: 7
+next_phase: null
+last_verified:
+  command: uv lock --check && uv run ruff check . && uv run pytest -q
+  tests_passed: 461
+  tests_skipped: 35
+  subtests_passed: 9
+  ruff: passed
+phases:
+  - id: 0
+    name: Stabilize the existing foundation
+    dependencies: []
+    status: completed
+    completed_at: "2026-09-13"
+    evidence:
+      - "commit:c2d3ed2"
+      - "verification:locked dependencies, Ruff, and offline test suite"
+  - id: 1
+    name: One-click base/candidate evaluation
+    dependencies: [0]
+    status: completed
+    completed_at: "2026-09-13"
+    evidence:
+      - "api:POST /api/comparison-runs"
+      - "api:GET /api/comparison-runs/{comparison_id}"
+      - "test:tests/workbench/test_pipeline.py::test_one_click_comparison_queues_matching_base_and_candidate"
+      - "test:tests/workbench/test_pipeline.py::test_completed_pair_returns_automatic_comparison"
+  - id: 2
+    name: Consolidate data preparation
+    dependencies: [1]
+    status: completed
+    completed_at: "2026-09-13"
+    evidence:
+      - "cli:credit-risk-data-prep fixture|gold|spike"
+      - "test:tests/test_data_prep.py"
+  - id: 3
+    name: Add metric units
+    dependencies: [2]
+    status: completed
+    completed_at: "2026-09-13"
+    evidence:
+      - "schema:configs/schema_registry.yaml@1.4.0"
+      - "test:tests/test_metric_units.py"
+  - id: 4
+    name: Add taxonomy, coverage, and diversity
+    dependencies: [3]
+    status: completed
+    completed_at: "2026-09-13"
+    evidence:
+      - "cli:credit-risk-data-prep coverage|diversity"
+      - "config:configs/data_prep/coverage_targets.yaml@1.0.0"
+      - "test:tests/test_data_diversity.py"
+      - "test:tests/test_data_prep.py"
+  - id: 5
+    name: Add deterministic derivations
+    dependencies: [3, 4]
+    status: completed
+    completed_at: "2026-09-13"
+    evidence:
+      - "schema:credit_risk.schemas.Derivation"
+      - "contract:prompt-v4.0.0,dataset-v5.0.0,recommended-v3"
+      - "test:tests/test_derivation.py"
+  - id: 6
+    name: Add policy-rule evaluation
+    dependencies: [5]
+    status: completed
+    completed_at: "2026-09-13"
+    evidence:
+      - "registry:configs/policy_rules.yaml@1.0.0"
+      - "cli:credit-risk-data-prep rules"
+      - "api:mandatory unevaluable rules abstain before model call"
+      - "test:tests/test_policy_rules.py"
+  - id: 7
+    name: Build reviewed phase-2 data
+    dependencies: [4, 6]
+    status: blocked
+    completed_at: null
+    evidence:
+      - "blocked:requires independent human-reviewed cases"
+  - id: 8
+    name: Build and qualify policy retrieval
+    dependencies: [6]
+    status: blocked
+    completed_at: null
+    evidence:
+      - "blocked:requires approved policy documents and relevance labels"
+  - id: 9
+    name: Add portable remote training
+    dependencies: [7]
+    status: not_started
+    completed_at: null
+    evidence: []
+  - id: 10
+    name: Qualify and release a candidate
+    dependencies: [7, 8, 9]
+    status: blocked
+    completed_at: null
+    evidence:
+      - "blocked:requires reviewed benchmark, judge, retrieval, and training artifacts"

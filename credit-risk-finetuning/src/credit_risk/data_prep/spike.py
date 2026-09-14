@@ -1,15 +1,18 @@
 """100 synthetic mechanics-only examples. Not SME-approved credit training data."""
 
+import argparse
 import json
 from datetime import date
 from pathlib import Path
 
 import yaml
 
-from credit_risk.dataset import build_dataset
+from credit_risk.dataset import build_dataset, stable_split
 
 
-def main():
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.parse_args(argv)
     root = Path("outputs/spike-v3")
     if root.exists():
         raise ValueError("Spike directory already exists")
@@ -36,10 +39,16 @@ def main():
         payloads.append(
             {
                 "case": case,
-                "question": "Report the supplied days past due.",
+                "question": (
+                    "Report the supplied days past due."
+                    if n < 50
+                    else "State the current delinquency in days."
+                ),
                 "evidence": [],
                 "target": json.dumps(target),
                 "task_type": "factsheet",
+                "situation": "base",
+                "template_family": f"mechanics-{stable_split(case['group_id'])}-{n // 50}",
                 "data_classification": "synthetic",
                 "review": {
                     "status": "approved",

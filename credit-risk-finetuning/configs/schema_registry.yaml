@@ -1,4 +1,4 @@
-version: "1.2.0"
+version: "1.5.0"
 default_deny: true
 
 # Columns that carry point-in-time semantics. Every compiled query is filtered on
@@ -7,10 +7,15 @@ default_deny: true
 point_in_time:
   data_cutoff_column: data_cutoff_date
   model_run_column: model_run_date
+  # Append-only source loads (workbench). A snapshot query adds load_id <= watermark and
+  # keeps the latest load per grain row, so a restatement never rewrites an earlier
+  # snapshot. Queries without a snapshot do not reference this column.
+  load_column: load_id
 
 tables:
   obligor_monthly:
     grain: obligor_month
+    grain_columns: [obligor_id, observation_date]
     portfolios: [retail, sme, corporate]
     date_column: observation_date
     entity_column: obligor_id
@@ -42,8 +47,10 @@ tables:
       stage: {type: integer, allowed: [1, 2, 3], sensitivity: confidential}
       watchlist_flag: {type: boolean, sensitivity: confidential}
       restructuring_flag: {type: boolean, sensitivity: confidential}
+      load_id: {type: integer, min: 1, sensitivity: internal}
   facility_monthly:
     grain: facility_month
+    grain_columns: [obligor_id, facility_id, observation_date]
     portfolios: [retail, sme, corporate]
     date_column: observation_date
     entity_column: obligor_id
@@ -61,47 +68,57 @@ tables:
       days_past_due: {type: integer, min: 0, sensitivity: confidential}
       collateral_value: {type: number, min: 0, sensitivity: confidential}
       stage: {type: integer, allowed: [1, 2, 3], sensitivity: confidential}
+      load_id: {type: integer, min: 1, sensitivity: internal}
 
 # entity_grain is default-deny: a metric may only be requested at a grain it declares.
 metrics:
   current_ratio:
+    unit: x
     portfolios: [sme, corporate]
     entity_grain: [obligor_month]
     dependencies: [current_assets, current_liabilities]
-    formula_id: ratio.current_ratio.v1
+    formula_id: ratio.current_ratio.v2
   net_debt_to_ebitda:
+    unit: x
     portfolios: [sme, corporate]
     entity_grain: [obligor_month]
     dependencies: [total_debt, cash, ebitda]
-    formula_id: ratio.net_debt_to_ebitda.v1
+    formula_id: ratio.net_debt_to_ebitda.v2
   dscr:
+    unit: x
     portfolios: [sme, corporate]
     entity_grain: [obligor_month]
     dependencies: [operating_cash_flow, debt_service]
-    formula_id: ratio.dscr.v1
+    formula_id: ratio.dscr.v2
   interest_coverage:
+    unit: x
     portfolios: [sme, corporate]
     entity_grain: [obligor_month]
     dependencies: [ebitda, interest_expense]
-    formula_id: ratio.interest_coverage.v1
+    formula_id: ratio.interest_coverage.v2
   utilisation_pct:
+    unit: pct
     portfolios: [retail, sme, corporate]
     entity_grain: [obligor_month, facility_month]
     dependencies: [outstanding, facility_limit]
-    formula_id: ratio.utilisation.v1
+    formula_id: ratio.utilisation.v2
   pit_pd:
+    unit: probability
     portfolios: [retail, sme, corporate]
     entity_grain: [obligor_month]
     source_column: pit_pd
   internal_rating:
+    unit: rating_grade
     portfolios: [retail, sme, corporate]
     entity_grain: [obligor_month]
     source_column: internal_rating
   stage:
+    unit: stage
     portfolios: [retail, sme, corporate]
     entity_grain: [obligor_month, facility_month]
     source_column: stage
   days_past_due:
+    unit: days
     portfolios: [retail, sme, corporate]
     entity_grain: [obligor_month, facility_month]
     source_column: days_past_due

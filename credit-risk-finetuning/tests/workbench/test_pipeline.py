@@ -1,5 +1,6 @@
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -158,6 +159,7 @@ def test_dataset_checksum_and_split_isolation(tmp_path):
     p = manifest(tmp_path, [case(split="train")])
     result = inspect_dataset(p)
     assert result["counts"] == {"train": 1, "validation": 0, "test": 0, "oot": 0}
+    assert inspect_dataset(tmp_path)["path"] == str(p.resolve())
     (tmp_path / "train.jsonl").write_text("changed")
     with pytest.raises(ValueError, match="checksum"):
         inspect_dataset(p)
@@ -250,10 +252,12 @@ def test_new_recommended_contract_is_saved_without_implicit_activation(tmp_path)
     recommended = [
         version
         for version in reloaded.list("version")
-        if version["name"] == "Recommended structured contract v2"
+        if version["name"] == "Recommended structured contract v3"
     ]
     assert len(recommended) == 1
     assert "risk_driver_details" in recommended[0]["schema"]["properties"]
+    claim = recommended[0]["schema"]["$defs"]["SupportedClaim"]
+    assert "derivation" in claim["properties"]
 
 
 def test_prompt_contains_output_schema():
@@ -504,6 +508,229 @@ def test_running_job_stop_uses_process_group(tmp_path, monkeypatch):
     assert s.get("job", record["id"])["status"] == "cancelled"
 
 
+def test_job_detail_reports_progress_and_downloads_full_log(tmp_path, monkeypatch):
+    import yaml
+
+    from credit_risk.workbench import server
+
+    monkeypatch.setattr(server, "PROJECT", tmp_path)
+    workspace = tmp_path / "workspace"
+    app = create_app(workspace, False)
+    client = TestClient(app)
+    store = app.state.store
+    identity = "progress-job"
+    output = workspace / "runs" / identity
+    output.mkdir(parents=True)
+    (output / "training.yaml").write_text(yaml.safe_dump({"iters": 128}))
+    (output / "job.log").write_text("complete local log\n")
+    adapter = tmp_path / "adapters/candidates/credit_analysis" / identity
+    adapter.mkdir(parents=True)
+    (adapter / "metrics.jsonl").write_text(
+        json.dumps({"train": {"iteration": 8, "train_loss": 1.0}}) + "\n"
+    )
+    store.add(
+        "job",
+        {
+            "status": "running",
+            "spec": {
+                "kind": "train",
+                "task": "credit_analysis",
+                "output": str(output),
+                "config": {"grad_accumulation_steps": 8},
+            },
+        },
+        identity,
+    )
+    detail = client.get(f"/api/jobs/{identity}").json()
+    assert detail["progress"] == {
+        "current_micro_batches": 8,
+        "total_micro_batches": 128,
+        "current_optimizer_updates": 1,
+        "total_optimizer_updates": 16,
+        "percent": 6.2,
+    }
+    download = client.get(f"/api/jobs/{identity}/log")
+    assert download.text == "complete local log\n"
+    assert f'filename="{identity}.log"' in download.headers["content-disposition"]
+
+
+def test_one_click_comparison_queues_matching_base_and_candidate(tmp_path, monkeypatch):
+    from credit_risk.workbench import server
+    from credit_risk.workbench.evaluation import EVALUATOR_VERSION
+
+    monkeypatch.setattr(server, "PROJECT", tmp_path)
+    model = {"id": "base-revision", "path": str(tmp_path / "model"), "label": "Fixture base"}
+    monkeypatch.setattr(server, "model_catalog", lambda: [model])
+    app = create_app(tmp_path / "workspace", False)
+    client = TestClient(app)
+    client.headers["X-Workbench-Token"] = client.get("/api/session").json()["token"]
+    store = app.state.store
+    version = store.get("version", store.active_version("credit_analysis"))
+    cases = [
+        case(case_id="v", group_id="vg", split="validation"),
+        case(case_id="t", group_id="tg", split="test", question="test question"),
+        case(
+            case_id="o",
+            group_id="og",
+            split="oot",
+            question="oot question",
+            as_of_date="2026-01-01",
+        ),
+    ]
+    dataset = inspect_dataset(manifest(tmp_path / "dataset", cases))
+    dataset = store.add("dataset", dataset, dataset["hash"])
+    training_id = "completed-training"
+    output = tmp_path / "workspace/runs" / training_id
+    output.mkdir(parents=True)
+    adapter = tmp_path / "adapters/candidates/credit_analysis" / training_id
+    adapter.mkdir(parents=True)
+    best = b"verified-best"
+    final = b"verified-final"
+    (adapter / "adapter_config.json").write_text("{}")
+    (adapter / "best_adapters.safetensors").write_bytes(best)
+    (adapter / "adapters.safetensors").write_bytes(final)
+    (adapter / "completion.json").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "best_optimizer_updates": 1,
+                "checkpoint_sha256": hashlib.sha256(best).hexdigest(),
+                "final_checkpoint_sha256": hashlib.sha256(final).hexdigest(),
+            }
+        )
+    )
+    training = store.add(
+        "job",
+        {
+            "status": "completed",
+            "spec": {
+                "kind": "train",
+                "task": "credit_analysis",
+                "dataset": dataset,
+                "model": model,
+                "version": version,
+                "config": Config().model_dump(),
+                "output": str(output),
+            },
+        },
+        training_id,
+    )
+    request = {
+        "training_job_id": training["id"],
+        "checkpoint": "best",
+        "splits": ["validation", "test", "oot"],
+        "generation_profile": "deterministic",
+    }
+    created = client.post("/api/comparison-runs", json=request)
+    assert created.status_code == 200, created.text
+    payload = created.json()
+    base = store.get("job", payload["base_evaluation_job_id"])
+    candidate = store.get("job", payload["candidate_evaluation_job_id"])
+    assert "adapter_path" not in base["spec"]
+    assert candidate["spec"]["adapter_job_id"] == training_id
+    assert candidate["spec"]["checkpoint_sha256"] == hashlib.sha256(best).hexdigest()
+    for key in (
+        "dataset_manifest",
+        "case_set_hash",
+        "model_revision",
+        "prompt_hash",
+        "schema_hash",
+        "generation_hash",
+        "evaluator_version",
+    ):
+        assert base["spec"]["comparison_compatibility"][key] == candidate["spec"][
+            "comparison_compatibility"
+        ][key]
+    assert base["spec"]["comparison_compatibility"]["evaluator_version"] == EVALUATOR_VERSION
+    assert client.post("/api/comparison-runs", json=request).status_code == 422
+    queued = client.get("/api/comparison-runs/" + payload["comparison_id"]).json()
+    assert queued["status"] == "queued"
+    assert queued["base"]["progress"] == {"current_cases": 0, "total_cases": 3, "percent": 0.0}
+
+
+def test_completed_pair_returns_automatic_comparison(tmp_path, monkeypatch):
+    from credit_risk.workbench import server
+
+    monkeypatch.setattr(server, "PROJECT", tmp_path)
+    model = {"id": "base-revision", "path": str(tmp_path / "model"), "label": "Fixture base"}
+    monkeypatch.setattr(server, "model_catalog", lambda: [model])
+    app = create_app(tmp_path / "workspace", False)
+    client = TestClient(app)
+    client.headers["X-Workbench-Token"] = client.get("/api/session").json()["token"]
+    store = app.state.store
+    version = store.get("version", store.active_version("credit_analysis"))
+    cases = [case(case_id="v", group_id="vg", split="validation")]
+    dataset = inspect_dataset(manifest(tmp_path / "dataset", cases))
+    dataset = store.add("dataset", dataset, dataset["hash"])
+    training_id = "training-for-comparison"
+    output = tmp_path / "workspace/runs" / training_id
+    output.mkdir(parents=True)
+    adapter = tmp_path / "adapters/candidates/credit_analysis" / training_id
+    adapter.mkdir(parents=True)
+    weights = b"best"
+    (adapter / "adapter_config.json").write_text("{}")
+    (adapter / "best_adapters.safetensors").write_bytes(weights)
+    (adapter / "adapters.safetensors").write_bytes(b"final")
+    (adapter / "completion.json").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "best_optimizer_updates": 1,
+                "checkpoint_sha256": hashlib.sha256(weights).hexdigest(),
+                "final_checkpoint_sha256": hashlib.sha256(b"final").hexdigest(),
+            }
+        )
+    )
+    store.add(
+        "job",
+        {
+            "status": "completed",
+            "spec": {
+                "kind": "train",
+                "task": "credit_analysis",
+                "dataset": dataset,
+                "model": model,
+                "version": version,
+                "config": Config().model_dump(),
+                "output": str(output),
+            },
+        },
+        training_id,
+    )
+    pair = client.post(
+        "/api/comparison-runs",
+        json={"training_job_id": training_id, "splits": ["validation"]},
+    ).json()
+    report = {
+        "evaluator_version": "field-checks-v2",
+        "case_set_hash": store.get("comparison", pair["comparison_id"])["compatibility"][
+            "case_set_hash"
+        ],
+        "identity": {"version_id": version["id"], "generation": {"profile": "same"}},
+        "splits": {
+            "validation": {
+                "json_validity": {
+                    "value": 1.0,
+                    "denominator": 1,
+                    "ci95": [1.0, 1.0],
+                    "sufficient_sample": False,
+                }
+            }
+        },
+        "cases": [],
+    }
+    for key in ("base_evaluation_job_id", "candidate_evaluation_job_id"):
+        job_id = pair[key]
+        run = store.get("job", job_id)
+        Path(run["spec"]["output"]).joinpath("result.json").write_text(json.dumps(report))
+        store.update_job(job_id, status="completed")
+    result = client.get("/api/comparison-runs/" + pair["comparison_id"])
+    assert result.status_code == 200, result.text
+    assert result.json()["status"] == "completed"
+    card = result.json()["metrics"]["scorecards"]["validation"]["json_validity"]
+    assert card == {"base": 1.0, "candidate": 1.0, "delta": 0.0, "denominator": 1}
+
+
 def test_fuse_selects_best_checkpoint_and_records_hash(tmp_path, monkeypatch):
     import sys
 
@@ -515,7 +742,11 @@ def test_fuse_selects_best_checkpoint_and_records_hash(tmp_path, monkeypatch):
     adapter.mkdir()
     model = tmp_path / "base"
     model.mkdir()
-    (adapter / "completion.json").write_text(json.dumps({"status": "completed"}))
+    (adapter / "completion.json").write_text(json.dumps({
+        "status": "completed", "manifest_version": 2, "best_optimizer_updates": 1,
+        "baseline_loss": 1.0, "selected_loss": .8,
+        "checkpoint_sha256": hashlib.sha256(b"best-unit-fixture").hexdigest(),
+    }))
     (adapter / "adapter_config.json").write_text(json.dumps({"model": str(model)}))
     (adapter / "best_adapters.safetensors").write_bytes(b"best-unit-fixture")
     (adapter / "adapters.safetensors").write_bytes(b"final-unit-fixture")
@@ -719,6 +950,7 @@ def test_workbench_training_requires_v2_contract(tmp_path):
 
 
 def test_v2_preflight_resolves_schedule_modules_and_template_mode(tmp_path):
+    pytest.importorskip("mlx_lm")
     from credit_risk.workbench.worker import MLP_KEYS, prepare_training
 
     def v2_case(split, identity):
@@ -863,3 +1095,343 @@ def test_confidence_calibration_is_reported_but_small_samples_are_marked():
     assert calibration["brier_score"] == pytest.approx(0.04)
     assert calibration["expected_calibration_error"] == pytest.approx(0.2)
     assert calibration["status"] == "Small sample"
+
+
+def test_paired_scorecard_keeps_metrics_with_unequal_or_one_sided_denominators():
+    from credit_risk.workbench.evaluation import EVALUATOR_VERSION, aggregate
+
+    def report(rows):
+        return {
+            "case_set_hash": "same",
+            "evaluator_version": EVALUATOR_VERSION,
+            "identity": {"generation": {"profile": "same"}, "version_id": "v"},
+            "splits": {"test": aggregate(rows)},
+            "portfolios": {"retail": aggregate(rows)},
+            "cases": rows,
+        }
+
+    base = [
+        {"case_id": "a", "split": "test", "metrics": {"json_validity": 0.0}, "failures": ["x"]},
+        {
+            "case_id": "b",
+            "split": "test",
+            "metrics": {"json_validity": 1.0, "citation_resolution": 0.5},
+            "failures": [],
+        },
+    ]
+    candidate = [
+        {
+            "case_id": case_id,
+            "split": "test",
+            "metrics": {
+                "json_validity": 1.0,
+                "citation_resolution": 1.0,
+                "confidence_brier_score": 0.1,
+            },
+            "failures": [],
+        }
+        for case_id in ("a", "b")
+    ]
+    result = compare(report(base), report(candidate))
+    card = result["scorecards"]["test"]
+    assert card["json_validity"] == {"base": 0.5, "candidate": 1.0, "delta": 0.5, "denominator": 2}
+    assert card["citation_resolution"]["delta"] == 0.5
+    assert card["citation_resolution"]["base_denominator"] == 1
+    assert card["citation_resolution"]["candidate_denominator"] == 2
+    assert card["confidence_brier_score"]["base"] is None
+    assert card["confidence_brier_score"]["lower_is_better"] is True
+    assert result["portfolios"]["retail"]["citation_resolution"]["candidate"] == 1.0
+
+
+def test_ended_comparison_side_cancels_queued_partner(tmp_path):
+    s = Store(tmp_path)
+    launched = []
+
+    def launch(*args, **kw):
+        launched.append(FakeProcess())
+        return launched[-1]
+
+    jobs = Jobs(s, launch)
+    base = jobs.enqueue({"kind": "evaluate", "comparison_id": "pair", "comparison_role": "base"})
+    candidate = jobs.enqueue(
+        {"kind": "evaluate", "comparison_id": "pair", "comparison_role": "candidate"}
+    )
+    unrelated = jobs.enqueue({"kind": "evaluate"})
+    jobs.tick()
+    launched[0].code = 1
+    jobs.tick()
+    assert s.get("job", base["id"])["status"] == "failed"
+    assert s.get("job", candidate["id"])["status"] == "cancelled"
+    assert "base job ended as failed" in s.get("job", candidate["id"])["error"]
+    assert s.get("job", unrelated["id"])["status"] == "running"
+
+    first = jobs.enqueue({"kind": "evaluate", "comparison_id": "other", "comparison_role": "base"})
+    second = jobs.enqueue(
+        {"kind": "evaluate", "comparison_id": "other", "comparison_role": "candidate"}
+    )
+    jobs.stop(first["id"])
+    assert s.get("job", second["id"])["status"] == "cancelled"
+
+
+def test_restart_never_starts_previously_queued_jobs(tmp_path):
+    s = Store(tmp_path)
+    launched = []
+    queued = Jobs(s).enqueue({"kind": "evaluate"})
+    jobs = Jobs(s, lambda *a, **k: launched.append(FakeProcess()) or launched[-1])
+    jobs.start()
+    jobs.close()
+    jobs.tick()
+    assert launched == []
+    assert s.get("job", queued["id"])["status"] == "interrupted"
+
+
+def test_recommended_contract_numbering_continues_and_is_reported(tmp_path):
+    store = Store(tmp_path)
+    legacy = default_version("credit_analysis")
+    legacy["prompt"] = "Older prompt"
+    legacy["name"] = "Recommended structured contract v3"
+    store.active_version("credit_analysis", store.add("version", legacy)["id"])
+    client = TestClient(create_app(tmp_path, False))
+    state = client.get("/api/state").json()
+    names = [v["name"] for v in state["versions"] if v["task"] == "credit_analysis"]
+    assert names.count("Recommended structured contract v3") == 1
+    recommended = next(v for v in state["versions"] if v["id"] == state["recommended"]["credit_analysis"])
+    assert recommended["name"] == "Recommended structured contract v4"
+    assert state["active"]["credit_analysis"] != recommended["id"]
+    assert state["evaluation_policy"]["min_reportable_slice"] == 10
+
+
+def test_state_omits_frozen_cases_and_intervals_follow_accumulation(tmp_path, monkeypatch):
+    from credit_risk.workbench import server
+
+    model = {"id": "base-revision", "path": str(tmp_path / "model"), "label": "Fixture base"}
+    monkeypatch.setattr(server, "model_catalog", lambda: [model])
+    app = create_app(tmp_path / "workspace", False)
+    client = TestClient(app)
+    client.headers["X-Workbench-Token"] = client.get("/api/session").json()["token"]
+    store = app.state.store
+    dataset = inspect_dataset(
+        manifest(tmp_path / "dataset", [case(case_id="t", group_id="tg", split="test")])
+    )
+    dataset = store.add("dataset", dataset, dataset["hash"])
+    request = {
+        "task": "credit_analysis",
+        "kind": "evaluate",
+        "dataset_id": dataset["id"],
+        "version_id": store.active_version("credit_analysis"),
+        "model_id": model["id"],
+        "splits": ["test"],
+    }
+    expected = {16: (16, 80, 80), 32: (32, 96, 96), 8: (8, 80, 80)}
+    for accumulation, intervals in expected.items():
+        job = client.post(
+            "/api/jobs", json={**request, "config": {"grad_accumulation_steps": accumulation}}
+        )
+        assert job.status_code == 200, job.text
+        config = job.json()["spec"]["config"]
+        assert (config["steps_per_report"], config["steps_per_eval"], config["save_every"]) == intervals
+    explicit = {"grad_accumulation_steps": 16, "steps_per_report": 8}
+    assert client.post("/api/jobs", json={**request, "config": explicit}).status_code == 422
+    listed = client.get("/api/state").json()["jobs"][0]["spec"]["dataset"]
+    assert "cases" not in listed and listed["counts"]["test"] == 1
+    assert store.list("job")[0]["spec"]["dataset"]["cases"]
+
+
+def test_preflight_token_lengths_are_recorded_for_the_dataset(tmp_path, monkeypatch):
+    from credit_risk.workbench import server
+
+    model = {"id": "base-revision", "path": str(tmp_path / "model"), "label": "Fixture base"}
+    monkeypatch.setattr(server, "model_catalog", lambda: [model])
+    metadata = {
+        "token_lengths": [100, 300, 200],
+        "max_tokens": 300,
+        "min_assistant_tokens": 20,
+        "chat_template_hash": "template",
+    }
+    monkeypatch.setattr(server, "prepare_training", lambda spec: ({}, metadata))
+    app = create_app(tmp_path / "workspace", False)
+    client = TestClient(app)
+    client.headers["X-Workbench-Token"] = client.get("/api/session").json()["token"]
+    store = app.state.store
+    dataset = inspect_dataset(manifest(tmp_path / "dataset", [case(case_id="t", split="train")]))
+    dataset = store.add("dataset", dataset, dataset["hash"])
+    request = {
+        "task": "credit_analysis",
+        "kind": "train",
+        "dataset_id": dataset["id"],
+        "version_id": store.active_version("credit_analysis"),
+        "model_id": model["id"],
+    }
+    for _ in range(2):
+        assert client.post("/api/preflight", json=request).status_code == 200
+    [record] = client.get("/api/state").json()["preflights"]
+    assert record["dataset_id"] == dataset["id"]
+    assert (record["examples"], record["max_tokens"], record["p95_tokens"]) == (3, 300, 300)
+
+
+def test_feedback_fragment_explains_skipped_feedback(setup):
+    _c, s, _v, a = setup
+    frozen = s.add(
+        "answer",
+        {
+            **{k: v for k, v in a.items() if k not in ("id", "created_at")},
+            "case": case(split="test").model_dump(),
+        },
+    )
+    submit(s, frozen["id"], "frozen", "wrong", answer(), "model_behaviour")
+    submit(s, a["id"], "comment-only", "looks off")
+    batch = batch_records(s, "credit_analysis")
+    assert batch["cases"] == []
+    assert batch["skipped_reasons"] == {"protected_split_or_group": 1, "submitted": 1}
+
+
+def test_jobs_record_start_and_finish_times(tmp_path):
+    s = Store(tmp_path)
+    launched = []
+    jobs = Jobs(s, lambda *a, **k: launched.append(FakeProcess()) or launched[-1])
+    job = jobs.enqueue({"kind": "evaluate"})
+    jobs.tick()
+    running = s.get("job", job["id"])
+    assert running["started_at"] and "finished_at" not in running
+    launched[0].code = 0
+    jobs.tick()
+    finished = s.get("job", job["id"])
+    assert finished["finished_at"] >= finished["started_at"]
+
+
+def _timing_app(tmp_path, monkeypatch):
+    from credit_risk.workbench import server
+
+    monkeypatch.setattr(server, "PROJECT", tmp_path)
+    app = create_app(tmp_path / "workspace", False)
+    return app, TestClient(app)
+
+
+def _ago(seconds):
+    from datetime import UTC, datetime, timedelta
+
+    return (datetime.now(UTC) - timedelta(seconds=seconds)).isoformat()
+
+
+def test_evaluation_timing_excludes_model_load_and_estimates_remaining(tmp_path, monkeypatch):
+    app, client = _timing_app(tmp_path, monkeypatch)
+    output = tmp_path / "workspace/runs/eval"
+    output.mkdir(parents=True)
+    (output / "progress.json").write_text(
+        json.dumps(
+            {"current_cases": 4, "total_cases": 10, "started_at": _ago(90), "updated_at": _ago(10)}
+        )
+    )
+    spec = {"kind": "evaluate", "task": "credit_analysis", "output": str(output), "splits": ["test"]}
+    app.state.store.add(
+        "job", {"status": "running", "started_at": _ago(300), "spec": spec}, "eval"
+    )
+    timing = client.get("/api/jobs/eval").json()["timing"]
+    assert timing["unit"] == "case"
+    assert timing["seconds_per_unit"] == pytest.approx(20, abs=0.5)
+    assert timing["eta_seconds"] == pytest.approx(110, abs=3)
+    assert timing["elapsed_seconds"] == pytest.approx(300, abs=3)
+
+
+def test_training_timing_uses_reported_metrics(tmp_path, monkeypatch):
+    import yaml
+
+    app, client = _timing_app(tmp_path, monkeypatch)
+    output = tmp_path / "workspace/runs/train"
+    output.mkdir(parents=True)
+    (output / "training.yaml").write_text(yaml.safe_dump({"iters": 40}))
+    adapter = tmp_path / "adapters/candidates/credit_analysis/train"
+    adapter.mkdir(parents=True)
+    (adapter / "metrics.jsonl").write_text(
+        json.dumps({"validation": {"iteration": 0, "val_loss": 1.0, "reported_at": _ago(100)}})
+        + "\n"
+        + json.dumps({"train": {"iteration": 10, "train_loss": 0.9, "reported_at": _ago(0)}})
+        + "\n"
+    )
+    spec = {
+        "kind": "train",
+        "task": "credit_analysis",
+        "output": str(output),
+        "config": {"grad_accumulation_steps": 2},
+    }
+    app.state.store.add("job", {"status": "running", "started_at": _ago(400), "spec": spec}, "train")
+    timing = client.get("/api/jobs/train").json()["timing"]
+    assert timing["unit"] == "micro-batch"
+    assert timing["seconds_per_unit"] == pytest.approx(10, abs=0.5)
+    assert timing["eta_seconds"] == pytest.approx(300, abs=5)
+
+
+def test_comparison_estimates_queued_candidate_from_base_rate(tmp_path, monkeypatch):
+    app, client = _timing_app(tmp_path, monkeypatch)
+    store = app.state.store
+    ids = {}
+    for role in ("base", "candidate"):
+        output = tmp_path / "workspace/runs" / role
+        output.mkdir(parents=True)
+        spec = {
+            "kind": "evaluate",
+            "task": "credit_analysis",
+            "output": str(output),
+            "splits": ["test"],
+            "cases": [{"split": "test"}] * 10,
+            "comparison_role": role,
+        }
+        ids[role] = store.add("job", {"status": "queued", "spec": spec}, role)["id"]
+    (tmp_path / "workspace/runs/base/progress.json").write_text(
+        json.dumps(
+            {"current_cases": 5, "total_cases": 10, "started_at": _ago(50), "updated_at": _ago(0)}
+        )
+    )
+    store.update_job("base", status="running", started_at=_ago(60))
+    store.add(
+        "comparison",
+        {"base_job_id": ids["base"], "candidate_job_id": ids["candidate"], "checkpoint": "best"},
+        "pair",
+    )
+    pair = client.get("/api/comparison-runs/pair").json()
+    assert pair["status"] == "running"
+    assert pair["timing"]["eta_seconds"] == pytest.approx(50 + 100, abs=3)
+    listed = client.get("/api/state").json()["jobs"]
+    assert next(j for j in listed if j["id"] == "base")["started_at"]
+    assert next(j for j in listed if j["id"] == "candidate")["started_at"] is None
+
+
+def test_comparison_against_previous_adapter_uses_reference_checkpoint(tmp_path, monkeypatch):
+    from credit_risk.workbench import server
+
+    monkeypatch.setattr(server, "PROJECT", tmp_path)
+    model = {"id": "base-revision", "path": str(tmp_path / "model"), "label": "Fixture base"}
+    monkeypatch.setattr(server, "model_catalog", lambda: [model])
+    app = create_app(tmp_path / "workspace", False)
+    client = TestClient(app)
+    client.headers["X-Workbench-Token"] = client.get("/api/session").json()["token"]
+    store = app.state.store
+    version = store.get("version", store.active_version("credit_analysis"))
+    dataset = inspect_dataset(manifest(tmp_path / "dataset", [case(case_id="v", group_id="vg", split="validation")]))
+    dataset = store.add("dataset", dataset, dataset["hash"])
+
+    def trained(identity, weights):
+        output = tmp_path / "workspace/runs" / identity
+        output.mkdir(parents=True)
+        adapter = tmp_path / "adapters/candidates/credit_analysis" / identity
+        adapter.mkdir(parents=True)
+        (adapter / "adapter_config.json").write_text("{}")
+        (adapter / "best_adapters.safetensors").write_bytes(weights)
+        (adapter / "adapters.safetensors").write_bytes(weights)
+        digest_value = hashlib.sha256(weights).hexdigest()
+        (adapter / "completion.json").write_text(json.dumps({"status": "completed", "best_optimizer_updates": 1, "checkpoint_sha256": digest_value, "final_checkpoint_sha256": digest_value}))
+        spec = {"kind": "train", "task": "credit_analysis", "dataset": dataset, "model": model, "version": version, "config": Config().model_dump(), "output": str(output)}
+        return store.add("job", {"status": "completed", "spec": spec}, identity), digest_value
+
+    previous, previous_hash = trained("previous-adapter", b"old")
+    candidate, candidate_hash = trained("new-adapter", b"new")
+    request = {"training_job_id": candidate["id"], "reference_job_id": previous["id"], "splits": ["validation"]}
+    pair = client.post("/api/comparison-runs", json=request)
+    assert pair.status_code == 200, pair.text
+    base = store.get("job", pair.json()["base_evaluation_job_id"])
+    other = store.get("job", pair.json()["candidate_evaluation_job_id"])
+    assert base["spec"]["adapter_job_id"] == previous["id"] and base["spec"]["checkpoint_sha256"] == previous_hash
+    assert other["spec"]["adapter_job_id"] == candidate["id"] and other["spec"]["checkpoint_sha256"] == candidate_hash
+    assert store.get("comparison", pair.json()["comparison_id"])["reference_job_id"] == previous["id"]
+    same = client.post("/api/comparison-runs", json={**request, "reference_job_id": candidate["id"]})
+    assert same.status_code == 422

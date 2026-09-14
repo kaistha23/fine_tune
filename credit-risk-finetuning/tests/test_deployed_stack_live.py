@@ -66,6 +66,7 @@ def settings() -> Settings:
     return Settings(
         qdrant_url=QDRANT,
         embedding_model=EMBEDDER,
+        embedding_revision="live-test-pinned-revision",
         omlx_base_url=OMLX,
         omlx_api_key=API_KEY,
     )

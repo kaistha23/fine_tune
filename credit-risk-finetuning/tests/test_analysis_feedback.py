@@ -25,6 +25,8 @@ from credit_risk.prompts import PROMPT_VERSION, SYSTEM_PROMPT
 from credit_risk.schemas import AnswerStatus, InteractionRecord, Jurisdiction, Portfolio
 
 FACTSHEET = {
+    # Synthetic fixture with explicit lineage; real factsheets without it are rejected.
+    "group_id": "synthetic-feedback-group",
     "case_id": "CASE-OBL-0008-2026-01-15",
     "obligor_id": "OBL-0008",
     "portfolio": "corporate",

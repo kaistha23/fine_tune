@@ -15,6 +15,7 @@ from typing import Any
 
 from credit_risk.calculations import (
     CALCULATORS,
+    METRIC_UNITS,
     calculate_metrics,
     percentage_point_change,
     relative_change_pct,
@@ -137,8 +138,11 @@ def build_factsheet(
     # Metrics sourced straight from a governed column are reported, not recalculated.
     for metric in plan.metrics:
         if metric not in metrics and metric in last:
+            if metric not in METRIC_UNITS:
+                raise FactsheetError("Metric has no governed unit: " + metric)
             metrics[metric] = MetricValue(
                 value=last[metric],
+                unit=METRIC_UNITS[metric],
                 source_columns=[metric],
                 formula_id=None,
                 missing_data_flag=last[metric] is None,
@@ -167,5 +171,7 @@ def build_factsheet(
         events=detect_events(ordered),
         model_outputs=model_outputs,
         missing_information=missing,
-        data_quality_flags=detect_data_quality(ordered, plan),
+        data_quality_flags=detect_data_quality(ordered, plan)
+        + [f"invalid_metric:{name}" for name, metric in metrics.items()
+           if metric.validation_status == "invalid"],
     )

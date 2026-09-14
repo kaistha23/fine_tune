@@ -19,7 +19,7 @@ with tempfile.TemporaryDirectory(prefix="credit-ui-test-") as temporary:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
-    command = "from pathlib import Path; import uvicorn; import credit_risk.workbench.server as s; s.PROJECT=Path(__import__('sys').argv[1]); uvicorn.run(s.create_app(Path(__import__('sys').argv[1])/'state'),host='127.0.0.1',port=int(__import__('sys').argv[2]))"
+    command = "from pathlib import Path; import uvicorn; import credit_risk.workbench.server as s; s.PROJECT=Path(__import__('sys').argv[1]); fake=Path(__import__('sys').argv[1])/'fake-base'; fake.mkdir(exist_ok=True); s.model_catalog=lambda: [{'id':'fake-base','path':str(fake),'label':'Fake base (no weights)'}]; s.embedding_catalog=lambda: []; uvicorn.run(s.create_app(Path(__import__('sys').argv[1])/'state'),host='127.0.0.1',port=int(__import__('sys').argv[2]))"
     with (root / "server.log").open("w") as log:
         proc = subprocess.Popen(
             [str(PROJECT / ".venv/bin/python"), "-c", command, str(root), str(port)],
@@ -47,6 +47,63 @@ with tempfile.TemporaryDirectory(prefix="credit-ui-test-") as temporary:
                     "() => document.querySelector('#status').textContent.startsWith('Ready')"
                 )
                 assert "No datasets registered" in page.locator("#datasetList").inner_text()
+                # Source data: initialize load 1, validate and append a synthetic month as load 2.
+                # The Playwright interpreter cannot import the project; use its virtualenv.
+                prep = [str(PROJECT / ".venv/bin/python"), "-m", "credit_risk.data_prep.cli", "fixture"]
+                curated = root / "data/curated/credit_risk.duckdb"
+                curated.parent.mkdir(parents=True)
+                small = ["--obligors", "4", "--seed", "17"]
+                subprocess.run([*prep, "--out", str(curated), *small], cwd=PROJECT, check=True, capture_output=True)
+                page.wait_for_function("() => !document.querySelector('#initSources').hidden")
+                page.locator("#initSources").click()
+                page.wait_for_function(
+                    "() => document.querySelector('#sourceStatus').textContent.startsWith('Watermark load 1')"
+                )
+                subprocess.run(
+                    [*prep, *small, "--month", "2026-01", "--out-dir", str(root / "incoming")],
+                    cwd=PROJECT, check=True, capture_output=True,
+                )
+                month = root / "incoming/obligor_monthly-2026-01.parquet"
+                page.locator("#sourceTable").select_option("obligor_monthly")
+                page.locator("#sourceFile").set_input_files(str(month))
+                page.locator("#validateSource").click()
+                page.wait_for_function("() => !document.querySelector('#appendSource').disabled")
+                page.locator("#appendSource").click()
+                page.wait_for_function(
+                    "() => document.querySelector('#sourceStatus').textContent.startsWith('Watermark load 2')"
+                )
+                assert "obligor_monthly-2026-01.parquet" in page.locator("#sourceLedger").inner_text()
+                # Documents: register a policy (indexing is not started, so no model loads).
+                policy = root / "policy.md"
+                policy.write_text(
+                    "# Monitoring\n\n7.2 Enhanced monitoring\n\nStage 2 obligors are reviewed every quarter.\n"
+                )
+                page.locator("#documentFile").set_input_files(str(policy))
+                page.locator("#documentId").fill("SAMA-MONITORING")
+                page.locator("#documentVersion").fill("1.0")
+                page.locator("#documentFrom").fill("2025-01-01")
+                page.locator("#registerDocument").click()
+                page.wait_for_function(
+                    "() => document.querySelector('#documentList').textContent.includes('SAMA-MONITORING@1.0')"
+                )
+                assert "registered" in page.locator("#documentReport").inner_text()
+                # Ask: template plan → run → the fake base has no weights, so the step fails
+                # visibly instead of loading a model.
+                page.get_by_role("button", name="Ask", exact=True).click()
+                page.locator("#askQuestion").fill("What is the current credit stage of OBL-0002?")
+                page.locator("#askAsOf").fill("2026-01-15")
+                page.locator("#askManual").click()
+                page.wait_for_function("() => !document.querySelector('#askPlanPanel').hidden")
+                plan = json.loads(page.locator("#askPlan").input_value())
+                assert plan["obligor_id"] == "OBL-0002" and plan["as_of_date"] == "2026-01-15"
+                page.locator("#askRun").click()
+                page.wait_for_function(
+                    "() => document.querySelector('#askStatus').textContent.startsWith('Failed')",
+                    timeout=60000,
+                )
+                assert "OBL-0002" in page.locator("#askHistory").inner_text()
+                page.screenshot(path=str(PROJECT / "outputs/workbench-browser/ask.png"), full_page=True)
+                page.get_by_role("button", name="Datasets", exact=True).click()
                 for title, section in [
                     ("Runs", "runs"),
                     ("Evaluation", "evaluation"),
@@ -85,8 +142,8 @@ with tempfile.TemporaryDirectory(prefix="credit-ui-test-") as temporary:
                 page.wait_for_function(
                     "() => document.querySelector('#answerSelect').options.length===2"
                 )
+                assert page.locator("#answerSelect option").nth(1).inner_text().startswith("imported")
                 page.locator("#answerSelect").select_option(index=1)
-                page.locator("#loadAnswer").click()
                 page.wait_for_function(
                     "() => document.querySelector('#answerInput').textContent.includes('UI-ONLY')"
                 )
@@ -104,6 +161,10 @@ with tempfile.TemporaryDirectory(prefix="credit-ui-test-") as temporary:
                 page.wait_for_function(
                     "() => document.querySelector('#feedbackResult').textContent.includes('eligible_for_training\": true')"
                 )
+                page.locator("#exportBatch").click()
+                page.wait_for_function(
+                    "() => document.querySelector('#feedbackResult').textContent.includes('eligible_cases\": 1')"
+                )
                 page.locator("#loadVersion").click()
                 page.locator("#versionName").fill("Browser fixture version")
                 page.locator("#promptEdit").fill(
@@ -114,7 +175,9 @@ with tempfile.TemporaryDirectory(prefix="credit-ui-test-") as temporary:
                     "() => document.querySelector('#editVersion').options.length===3"
                 )
                 after = page.request.get(base + "/api/state").json()
-                assert after["active"]["credit_analysis"] == version and len(after["jobs"]) == 0
+                assert after["active"]["credit_analysis"] == version
+                # Feedback and version edits never start training or evaluation.
+                assert not [j for j in after["jobs"] if j["spec"]["kind"] in ("train", "evaluate", "regression")]
                 # A completed artifact fixture exercises separate scorecards and loss rendering.
                 output = root / "fixture-run"
                 output.mkdir()
@@ -144,12 +207,15 @@ with tempfile.TemporaryDirectory(prefix="credit-ui-test-") as temporary:
                     "() => document.querySelector('#evalRun').options.length===2"
                 )
                 page.get_by_role("button", name="Evaluation", exact=True).click()
+                page.get_by_text("Advanced historical comparison").click()
                 page.locator("#evalRun").select_option("fixture-run")
                 page.locator("#loadEvaluation").click()
                 page.wait_for_function(
                     "() => document.querySelector('#scorecards').textContent.includes('50.0%')"
                 )
                 assert "oot" in page.locator("#scorecards").inner_text()
+                assert "Not evaluated" in page.locator("#releaseGates").inner_text()
+                assert "standalone evaluation" in page.locator("#comparisonProgressText").inner_text()
                 screenshots = PROJECT / "outputs/workbench-browser"
                 screenshots.mkdir(parents=True, exist_ok=True)
                 page.screenshot(path=str(screenshots / "evaluation.png"), full_page=True)

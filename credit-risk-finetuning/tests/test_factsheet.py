@@ -85,10 +85,12 @@ class FactsheetTests(unittest.TestCase):
         self.assertIsInstance(sheet, CreditFactsheet)
         self.assertEqual(sheet.observation_months, 3)
         self.assertEqual(sheet.calculated_metrics["current_ratio"].value, 0.9)
+        self.assertEqual(sheet.calculated_metrics["current_ratio"].unit, "x")
         self.assertEqual(
-            sheet.calculated_metrics["current_ratio"].formula_id, "ratio.current_ratio.v1"
+            sheet.calculated_metrics["current_ratio"].formula_id, "ratio.current_ratio.v2"
         )
         self.assertEqual(sheet.calculated_metrics["utilisation_pct"].value, 80.0)
+        self.assertEqual(sheet.calculated_metrics["utilisation_pct"].unit, "pct")
 
     def test_probability_change_is_reported_in_percentage_points(self) -> None:
         # 2% to 5% is +3pp. Reporting +150% here is the classic numeric error both
@@ -169,6 +171,8 @@ class DatasetFormatTests(unittest.TestCase):
                             {"answer_status": "INSUFFICIENT_EVIDENCE", "executive_summary": ""}
                         ),
                         "task_type": "credit_deterioration",
+                        "situation": "base",
+                        "template_family": "factsheet-round-trip",
                         "review": {
                             "status": "approved",
                             "reviewer_id": "synthetic",

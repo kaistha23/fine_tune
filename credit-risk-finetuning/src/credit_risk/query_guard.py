@@ -39,6 +39,9 @@ class CompiledQuery:
     group_by: list[str] = field(default_factory=list)
     aggregations: dict[str, str] = field(default_factory=dict)
     minimum_cohort_size: int | None = None
+    # Workbench append-only sources only: rows from loads above this watermark are
+    # invisible, and each grain row resolves to its latest load at or below it.
+    snapshot_load_id: int | None = None
 
 
 class SchemaRegistry:
@@ -112,8 +115,14 @@ class GuardedQueryCompiler:
         if undeclared:
             raise QueryGuardError(f"Generated SQL uses undeclared operators: {undeclared}")
 
-    def compile(self, plan: QueryPlan) -> CompiledQuery:
+    def compile(self, plan: QueryPlan, snapshot_load_id: int | None = None) -> CompiledQuery:
         controls = self.registry.data["query_controls"]
+        if snapshot_load_id is not None and (
+            isinstance(snapshot_load_id, bool)
+            or not isinstance(snapshot_load_id, int)
+            or snapshot_load_id < 1
+        ):
+            raise QueryGuardError("Snapshot load watermark must be a positive integer")
         if plan.jurisdiction.value not in controls["allowed_jurisdictions"]:
             raise QueryGuardError("Jurisdiction is not allowlisted")
         if len(plan.metrics) > controls["maximum_metrics"]:
@@ -282,6 +291,36 @@ class GuardedQueryCompiler:
             parameters.append(plan.as_of_date)
             filters.append(f"{model_run_column} <= {plan.as_of_date} (point-in-time)")
 
+        # Snapshot resolution happens in a derived table, before any cohort aggregation, so a
+        # restated row is counted once and an unseen later load is not counted at all. Every
+        # predicate, point-in-time included, is applied before choosing the latest load: a
+        # restatement not yet known at as_of_date must fall back to the earlier version of
+        # the row, not hide the row.
+        source_sql = f'"{table_name}"'
+        where_sql = " WHERE " + " AND ".join(predicates)
+        if snapshot_load_id is not None:
+            load_column = pit.get("load_column")
+            grain_columns = list(table.get("grain_columns", []))
+            if not load_column or load_column not in allowed_columns:
+                raise QueryGuardError(f"Table {table_name} declares no snapshot load column")
+            if not grain_columns or set(grain_columns).difference(allowed_columns):
+                raise QueryGuardError(f"Table {table_name} declares no valid grain columns")
+            inner_columns = sorted(source_columns | set(grain_columns) | {load_column})
+            partition = ", ".join(f'"{column}"' for column in grain_columns)
+            source_sql = (
+                "(SELECT "
+                + ", ".join(f'"{column}"' for column in inner_columns)
+                + f' FROM "{table_name}" WHERE "{load_column}" <= ? AND '
+                + " AND ".join(predicates)
+                + f' QUALIFY ROW_NUMBER() OVER (PARTITION BY {partition} ORDER BY "{load_column}" DESC) = 1'
+                + ') AS "snapshot"'
+            )
+            parameters.insert(0, snapshot_load_id)
+            where_sql = ""
+            filters.append(
+                f"{load_column} <= {snapshot_load_id} (snapshot; latest load per {'/'.join(grain_columns)})"
+            )
+
         maximum_rows = int(controls["maximum_result_rows"])
         # One row over the limit, so a truncated result is detectable rather than silently
         # returned as if it were complete. The data service rejects the overflow row.
@@ -314,8 +353,7 @@ class GuardedQueryCompiler:
                 else (plan.group_by[0] if plan.group_by else group_by[0])
             )
             sql = (
-                f'SELECT {", ".join(projection)} FROM "{table_name}" WHERE '
-                + " AND ".join(predicates)
+                f'SELECT {", ".join(projection)} FROM {source_sql}{where_sql}'
                 + f" GROUP BY {grouped}"
                 + f" HAVING {cohort_count} >= ?"
                 + f' ORDER BY "{order_column}" ASC LIMIT {fetch_limit}'
@@ -327,8 +365,7 @@ class GuardedQueryCompiler:
             ordered = sorted(source_columns)
             quoted = ", ".join('"' + column + '"' for column in ordered)
             sql = (
-                f'SELECT {quoted} FROM "{table_name}" WHERE '
-                + " AND ".join(predicates)
+                f"SELECT {quoted} FROM {source_sql}{where_sql}"
                 + f' ORDER BY "observation_date" ASC LIMIT {fetch_limit}'
             )
             result_grain = grain
@@ -349,4 +386,5 @@ class GuardedQueryCompiler:
             group_by=group_by,
             aggregations=aggregations,
             minimum_cohort_size=minimum_cohort_size,
+            snapshot_load_id=snapshot_load_id,
         )

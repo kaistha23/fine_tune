@@ -12,52 +12,20 @@ from credit_risk.schemas import AnswerStatus, CreditResponse
 
 Tier = Literal["low", "medium", "high", "prohibited"]
 
-# Analysis type to the tier its output carries.
-ANALYSIS_TIERS: dict[str, Tier] = {
-    "factsheet": "low",
-    "credit_deterioration": "medium",
-    "ews_analysis": "medium",
-    "email_draft": "medium",
-    "policy_qa": "medium",
-}
+def _default_control():
+    from credit_risk.data_prep.rules import PolicyRuleRegistry
+    from credit_risk.settings import settings
 
-# Language that indicates the model has crossed from advising into deciding.
-PROHIBITED_ACTIONS = (
-    "approve the facility",
-    "decline the application",
-    "approved the loan",
-    "we hereby approve",
-    "final credit decision",
-    "override the model",
-    "waive the covenant",
-    "amend the policy",
-)
-
-# Conclusions a human must own even when correctly reasoned.
-HIGH_TIER_MARKERS = (
-    "rating recommendation",
-    "recommend downgrade",
-    "recommend upgrade",
-    "sicr",
-    "stage migration",
-    "reclassify to stage",
-    "limit increase",
-    "covenant breach",
-    "write-off",
-)
-
-RELEASE = {
-    "low": "auto_release",
-    "medium": "analyst_review_required",
-    "high": "senior_credit_approval_required",
-    "prohibited": "blocked",
-}
+    return PolicyRuleRegistry(
+        settings.policy_rules, settings.policy_rules_version
+    ).action_control
 
 
-def classify(response: CreditResponse, analysis_type: str) -> tuple[Tier, list[str]]:
+def classify(response: CreditResponse, analysis_type: str, action_control=None) -> tuple[Tier, list[str]]:
     """Return the tier this output must be released under, and why."""
     reasons: list[str] = []
-    tier: Tier = ANALYSIS_TIERS.get(analysis_type, "medium")
+    action_control = action_control or _default_control()
+    tier: Tier = action_control["analysis_tiers"].get(analysis_type, "medium")
 
     body = " ".join(
         [
@@ -71,12 +39,12 @@ def classify(response: CreditResponse, analysis_type: str) -> tuple[Tier, list[s
         ]
     ).lower()
 
-    for phrase in PROHIBITED_ACTIONS:
+    for phrase in action_control["prohibited_actions"]:
         if phrase in body:
             reasons.append(f"prohibited_action:{phrase.replace(' ', '_')}")
             tier = "prohibited"
     if tier != "prohibited":
-        for phrase in HIGH_TIER_MARKERS:
+        for phrase in action_control["high_tier_markers"]:
             if phrase in body:
                 reasons.append(f"material_conclusion:{phrase.replace(' ', '_')}")
                 tier = "high"
@@ -89,11 +57,12 @@ def classify(response: CreditResponse, analysis_type: str) -> tuple[Tier, list[s
     return tier, sorted(set(reasons))
 
 
-def gate(response: CreditResponse, analysis_type: str) -> dict:
-    tier, reasons = classify(response, analysis_type)
+def gate(response: CreditResponse, analysis_type: str, action_control=None) -> dict:
+    action_control = action_control or _default_control()
+    tier, reasons = classify(response, analysis_type, action_control)
     return {
         "risk_tier": tier,
-        "release": RELEASE[tier],
+        "release": action_control["release"][tier],
         "reasons": reasons,
         # A recommendation always needs a named human, whatever the tier.
         "human_approval_required": tier != "low" or response.human_approval_required,

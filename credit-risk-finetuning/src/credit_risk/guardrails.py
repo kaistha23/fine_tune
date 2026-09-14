@@ -55,6 +55,7 @@ def validate_output(
     evidence: list[Evidence],
     factsheet_case_id: str | None = None,
     factsheet: dict | None = None,
+    rule_evaluations: list | None = None,
 ) -> GuardrailResult:
     """Check every material fact against something a reviewer can open.
 
@@ -85,6 +86,18 @@ def validate_output(
         for evidence_id in claim.evidence_ids:
             if evidence_id not in available_ids:
                 failures.append(f"unknown_citation:{evidence_id}")
+        if claim.derivation:
+            from credit_risk.data_prep.derivation import check_claim_derivation
+
+            from credit_risk.data_prep.rules import rule_thresholds
+
+            rules = rule_thresholds(rule_evaluations or [])
+            derivation = check_claim_derivation(claim, factsheet or {}, evidence, rules)
+            failures.extend(f"invalid_derivation:{reason}" for reason in derivation.failures)
+            if claim.derivation.rule_id:
+                evaluated = rules.get(claim.derivation.rule_id)
+                if evaluated and evaluated.get("holds") != claim.derivation.holds:
+                    failures.append("rule_contradiction:" + claim.derivation.rule_id)
     structured_ids = [
         evidence_id
         for item in [*response.conclusions, *response.risk_driver_details]
@@ -117,7 +130,8 @@ def validate_output(
 
 def supported_text(statement: str, source: str) -> bool:
     """Conservative extractive verification, not a claim of semantic entailment."""
-    normalise = lambda s: re.sub(r"\s+", " ", s).strip().rstrip(".").casefold()
+    def normalise(s):
+        return re.sub(r"\s+", " ", s).strip().rstrip(".").casefold()
     text = normalise(statement)
     sentences = re.split(r"(?<=[.!?])\s+|\n+", source)
     return bool(text) and any(text == normalise(sentence) for sentence in sentences)
@@ -136,3 +150,54 @@ def factsheet_statements(sheet: dict) -> str:
 
     walk(sheet)
     return " ".join(statements)
+
+
+def is_extractive_copy(response, evidence, factsheet_case_id=None, factsheet=None):
+    """Serving acceptance only; no claim of semantic entailment."""
+    return validate_output(response, evidence, factsheet_case_id, factsheet)
+
+
+def is_admissible_training_target(
+    response, evidence, factsheet, review=None, rule_evaluations=None
+):
+    """Permit supported paraphrases only with context-bound semantic/numeric review.
+
+    The normal dataset approval and provenance requirements still apply at the builder.
+    A review is bound to the exact target and sources so it cannot be reused after edits.
+    """
+    from credit_risk.review_store import digest
+
+    check = validate_output(
+        response, evidence, factsheet.get("case_id"), factsheet, rule_evaluations
+    )
+    hard = [f for f in check.failures if f not in {"unsupported_claim", "unverified_narrative"}]
+    soft = [f for f in check.failures if f in {"unsupported_claim", "unverified_narrative"}]
+    if "unsupported_claim" in soft:
+        from credit_risk.data_prep.derivation import check_claim_derivation
+
+        unsupported_without_derivation = any(
+            not supported_text(
+                claim.statement,
+                " ".join(
+                    factsheet_statements(factsheet)
+                    if evidence_id == factsheet.get("case_id")
+                    else next((item.text for item in evidence if item.evidence_id == evidence_id), "")
+                    for evidence_id in claim.evidence_ids
+                ),
+            )
+            and not check_claim_derivation(claim, factsheet, evidence).passed
+            for claim in response.facts
+        )
+        if not unsupported_without_derivation:
+            soft.remove("unsupported_claim")
+    review = review or {}
+    bound = digest({"target": response.model_dump(mode="json"), "factsheet": factsheet,
+                    "evidence": [e.model_dump(mode="json") for e in evidence]})
+    verified = (review.get("reviewer_id") and review.get("status") == "approved"
+                and review.get("semantic_supported") is True
+                and review.get("numerics_verified") is True
+                and review.get("content_hash") == bound)
+    if soft and not verified:
+        hard.append("semantic_and_numeric_review_required")
+    # Unknown/uncited material facts cannot be waived by a semantic review.
+    return GuardrailResult(not hard, hard)

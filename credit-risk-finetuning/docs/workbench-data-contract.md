@@ -66,6 +66,7 @@ Optional/phase-dependent fields:
 | `facts` | Exact model factsheet or query-schema context; preserve numerical types and case identity. |
 | `fact_records` | Typed facts with `fact_id`, `metric`, `value`, `unit`, `currency`, `effective_date` and `source_id`. Use stable source IDs and retain the governed factsheet in `facts`. |
 | `evidence` | Evidence objects in the existing Evidence schema, including versioned IDs and text. |
+| `rule_evaluations` | Deterministic, pre-model policy-rule outcomes frozen with the case and prompt. |
 | `target` | JSON object matching the selected output schema; required for train/validation preflight. |
 | `expected` | Independent checks, described below. Absent checks do not produce perfect scores. |
 | `consistency_paths` | Dot paths into stable JSON fields, e.g. `answer_status`, `risk_drivers`, or an explicit numeric/conclusion field in a compatible schema extension. |
@@ -91,7 +92,26 @@ Borrower groups and declared template families cannot cross splits. Train/valida
 - `tables`, `columns`, `joins`: expected compiler metadata.
 - `rows`: expected JSON-safe result rows, order independent, duplicate multiplicity preserved; requires the synthetic snapshot.
 
-All initial credit outputs retain the CreditResponse contract. The recommended V2 schema adds typed conclusions, risk-driver details, missing-information details and a structured recommendation while retaining the existing fields. Existing workspaces receive this as an inactive version; it is never selected automatically. Prompt/schema versions may add compatible fields; changing core required fields needs a separately implemented migration. Saved incompatible versions remain inspectable but cannot be activated or used for a run. Existing development targets must validate against a newly selected schema. No test/OOT labels are used for version compatibility or checkpoint selection. Prompt schemas omit titles, descriptions and defaults to reduce constant token overhead without changing validation rules.
+All initial credit outputs retain the CreditResponse contract. The recommended V3 schema adds typed conclusions, risk-driver details, missing-information details, a structured recommendation, and an optional deterministic derivation on supported claims. Existing workspaces receive this as an inactive version; it is never selected automatically. A derivation names a valid calculated metric and exact unit, cites threshold evidence, and declares an operator and result that the workbench recomputes. Prompt/schema versions may add compatible fields; changing core required fields needs a separately implemented migration. Saved incompatible versions remain inspectable but cannot be activated or used for a run. Existing development targets must validate against a newly selected schema. No test/OOT labels are used for version compatibility or checkpoint selection. Prompt schemas omit titles, descriptions and defaults to reduce constant token overhead without changing validation rules.
+
+## Source data loads
+
+Workbench source data is append-only and separate from training datasets. `outputs/workbench/source/credit_risk.duckdb` starts as a copy of the curated fixture recorded as **load 1**. Each later file is validated, then appended as the next `load_id`; nothing is updated or deleted.
+
+- **Format.** Parquet preferred; CSV with a header row or newline-delimited JSON records are accepted. One row per table grain (`obligor_monthly`: `obligor_id`, `observation_date`; `facility_monthly`: plus `facility_id`). Columns must be exactly the registry `allowed_columns` except `load_id`, which the loader assigns. Chat-style `role`/`content` JSON is a training format, not source data.
+- **Validation before append.** Declared types, ranges and allowed values; allowlisted portfolio and jurisdiction; non-null grain, portfolio, jurisdiction, `data_cutoff_date` and `model_run_date`; cutoff and model-run dates on or after `observation_date`; no future cutoff; unique grain within the file; the same file (sha256) is never loaded twice. The report lists every failure with row counts and examples; any failure blocks the append.
+- **Ledger.** `source_loads` records file name and sha256, row and restated-row counts, observation range, latest cutoff, registry version, time, and `chain_hash = sha256(previous chain, table, file sha256, rows)`.
+- **Snapshots.** A query at watermark *N* sees loads ≤ *N*, applies every point-in-time filter, then keeps the latest load per grain row. A restatement (same grain, later cutoff) therefore changes answers only at later watermarks and only for as-of dates after it was known. Answers record `{load_id, chain_hash}`.
+- **Registry.** Version 1.5.0 adds `point_in_time.load_column: load_id` and per-table `grain_columns`. Queries without a snapshot (the Docker API) compile exactly as before.
+
+## Policy documents
+
+Documents are registered as immutable `document_id@version` records (IDs: letters, digits, `.`, `_`, `-`). Accepted files: PDF, DOCX, Markdown, text, up to 50 MB; files are stored by sha256 under `outputs/workbench/documents/files`. Metadata: jurisdiction, effective-from (required), optional effective-to, approval status (only `approved` is retrievable), confidentiality level, optional allowed roles and portfolios, optional `supersedes_document_id`.
+
+- **Versions.** Re-registering the same ID and version with different content is rejected; publish a new version. Visible windows are derived: a later approved version of the same document, or an approved document that supersedes it, ends the earlier window the day before it takes effect. Two approved versions may not take effect on the same date.
+- **Chunks and citations.** Text is split by heading and clause; evidence IDs have the form `document@version#v2:<section>/<index>`.
+- **Indexing.** Embeddings use the cached `mlx-community/Qwen3-Embedding-0.6B-8bit` snapshot and are cached per document and embedder signature. Retrieval refuses documents not indexed with the current embedder.
+- **Retrieval.** Per-jurisdiction collections, role confidentiality levels, approval status and effective date are applied before search (`configs/retrieval.yaml`); dense and lexical results are fused and gated at `min_score`.
 
 ## Evaluation and feedback
 
@@ -113,11 +133,20 @@ The feedback export recommends a starting mixture of 20% validated feedback and 
 
 ## Bounded training search
 
-The Runs view exposes the supported local experiment surface: batch/accumulation, sequence limit, rank, scale, dropout, last 16 or all 32 layers, explicit attention/MLP presets, Adam or AdamW, weight decay, constant or cosine schedule, warm-up, minimum learning-rate ratio, seed, patience and minimum loss improvement. Invalid combinations fail preflight. Start with learning rates `1e-5`, `2e-5`, `5e-5`; test adapter capacity only after choosing a learning-rate region, and rerun finalists with multiple seeds. Test and OOT remain outside selection.
+The Runs view exposes the supported local experiment surface: batch/accumulation, sequence limit, rank, scale, dropout, 1/4/8/16/32 adapted layers, explicit attention/MLP presets, Adam or AdamW, weight decay, constant or cosine schedule, warm-up, minimum learning-rate ratio, seed, patience and minimum loss improvement. The safe Qwen3.5-9B local default is one attention-only layer at rank 8; increase capacity only after a native memory check. Invalid combinations fail preflight. Start with learning rates `1e-5`, `2e-5`, `5e-5`; test adapter capacity only after choosing a learning-rate region, and rerun finalists with multiple seeds. Test and OOT remain outside selection.
 
 The cached checkpoint is recorded as MLX quantized LoRA with its actual 4-bit affine/group-size metadata. No NF4, double-quantization or paged-optimizer claim is inferred from the term QLoRA.
 
 Recommendations are deterministic checklist suggestions, **not an automatic diagnosis or a measured improvement**. The version editor saves a new prompt/schema directly; Use version explicitly selects it for new runs and can restore an older version. There is no approve/accept/reject feedback workflow. Exported feedback is a versioned input fragment; merge it into a new phase-2 dataset and rerun split/target validation before explicitly starting training.
+
+## Ask answers, memory and the learning loop
+
+- **Ask answers** are development cases (`split: development`, `group_id` = obligor, `template_family: ask-live`) with lineage: snapshot `{load_id, chain_hash}`, visible document versions, masked SQL packet, model/checkpoint and generation. Ask uses greedy decoding with seeds 42/43/44 and a 2,500-token output budget; the evaluation profile keeps 1,024 tokens.
+- **Answer memory.** `context_key` hashes the confirmed plan, snapshot, visible documents, retrieval policy and embedder, policy rules, prompt/schema version, model and checkpoint, generation and runtime library versions; `answer_key` adds the normalised question. Identical keys reuse the latest verified, system, model or invalid answer (in that order). Unstable answers (repeats disagree on decision fields) are never reused. Decision fields: `answer_status`, stage, risk drivers, recommendation and cited evidence IDs.
+- **Verified answers** come from **Confirm correct**, a valid correction submitted in Answers & feedback, or **Still valid** after a change. They are returned for identical questions immediately; training still requires eligibility and a new dataset version.
+- **Plan drafts** are stored as query-plan answers labelled with the confirmed plan; **Plan was wrong** submits the confirmed plan as a `model_behaviour` correction (eligible for the query-plan fragment and a development regression check).
+- **Dataset builder.** Adds eligible corrections to a registered V2 dataset's train split up to the chosen share (default 20%), skipping protected groups, duplicates, cases without V2 lineage and questions on or after `oot_from`; validation/test/OOT files are copied byte-identical. Reviewed paraphrases share `equivalence_id = feedback-<id>`. The result is re-checked with the normal registration rules but not registered.
+- **Consistency gates** (`configs/consistency_gates.yaml`): repeated agreement 1.0, equivalent agreement ≥ 0.95, negative-control distinction ≥ 0.95, verified replay 100%, and no development check newly failing versus the base model. Shown with the paired comparison; they are evidence, not an automatic promotion.
 
 ## Local interfaces
 
@@ -125,10 +154,20 @@ Recommendations are deterministic checklist suggestions, **not an automatic diag
 - `POST /api/datasets {path}`: register a manifest.
 - `POST /api/preflight`, `POST /api/jobs`: task, kind (`train`, `evaluate`, `regression`), dataset/version/model IDs, checkpoint and allowed training settings.
 - `GET /api/jobs/{id}`, `POST /api/jobs/{id}/stop`: artifacts and explicit stop.
+- `POST /api/comparison-runs`: derive and queue a matched base/candidate evaluation pair from a completed training run.
+- `GET /api/comparison-runs/{id}`: paired status, per-case progress and automatic compatible scorecards.
 - `GET /api/compare/{left}/{right}?mode=model|prompt`: compatible result comparison.
 - `POST /api/answers`: import `{case, output, version_id, identity?, sql_lineage?}`. Imported answers are labeled as imported, not measured native runs.
 - `POST /api/feedback`: `{submission_id, interaction_id, comment?, correction?, cause?, expectations?}`. No approval fields.
 - `GET /api/feedback/batch/{task}`: latest eligible correction fragment.
 - `POST /api/versions {task,prompt,schema,name,parent?}`, `POST /api/versions/{id}/activate`: version history and explicit selection/rollback.
+- `GET /api/sources`, `POST /api/sources/initialize`, `POST /api/sources/stage?table=&filename=` (raw file body → validation report), `POST /api/sources/append {staged_id, table}`: append-only source loads.
+- `GET /api/documents`, `POST /api/documents/stage?filename=` (raw file body), `POST /api/documents {staged_id, file_name, metadata}`, `POST /api/documents/index`: versioned documents and embedding job.
+- `POST /api/questions`, `GET /api/questions`, `GET /api/questions/{id}`, `POST /api/questions/{id}/plan {plan}`: Ask pipeline (a structured `QueryPlan` only; SQL is never accepted).
+- `POST /api/questions/{id}/plan-feedback`, `POST /api/answers/{id}/verify`, `POST /api/questions/{id}/still-valid`: plan corrections and verified answers.
+- `GET /api/sessions`, `POST /api/sessions/release`: model session status and release.
+- `GET /api/verified`, `POST /api/replay {model}`: verified answers and replay jobs.
+- `POST /api/datasets/build {base_dataset_id, dataset_version, feedback_fraction?, paraphrases?}`: build (not register) a dataset version from eligible feedback.
+- `POST /api/comparison-runs` also accepts `reference_job_id` to compare against a previous adapter instead of the base.
 
 State-changing requests require the automatically supplied `X-Workbench-Token` header and same-origin browser access. APIs do not accept arbitrary commands or executable SQL. Submission and job specs are persisted locally; treat the workspace as private development state.

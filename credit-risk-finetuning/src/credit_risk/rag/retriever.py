@@ -15,7 +15,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from credit_risk.guardrails import validate_retrieval
-from credit_risk.rag.filters import AccessPredicate, RetrievalPolicy
+from credit_risk.rag.filters import AccessPredicate, RetrievalPolicy, chunk_is_visible
 from credit_risk.rag.index import InMemoryPolicyIndex, PolicyIndex
 from credit_risk.rag.schemas import AccessContext, PolicyChunk
 from credit_risk.schemas import Evidence
@@ -74,26 +74,21 @@ class PolicyRetriever:
         fused = reciprocal_rank_fusion([dense, lexical], int(settings["rrf_k"]))
 
         top_k = int(settings["top_k"])
-        selected = fused[:top_k]
-
-        # RRF ranks candidates; it is not a probability of evidence support.
-        # Use absolute cosine only as a conservative candidate gate. Calibration is
-        # separately required before a benchmark may support promotion.
-        dense_scores = {chunk.chunk_id: score for chunk, score in dense}
-        lexical_ids = {chunk.chunk_id for chunk, score in lexical if score > 0}
-        evidence = [
-            to_evidence(chunk, dense_scores.get(chunk.chunk_id, 0.0))
-            for chunk, _ in selected
-            if dense_scores.get(chunk.chunk_id, 0.0) >= float(settings["min_score"])
-            and chunk.chunk_id in lexical_ids
-        ]
+        # Both arms are candidate generators; every candidate uses the same cosine gate.
+        chunks = [chunk for chunk, _ in fused]
+        if any(not chunk_is_visible(chunk, predicate) for chunk in chunks):
+            raise RetrievalError("Pre-search access filter did not hold")
+        dense_scores = self.index.score_candidates(question, chunks) if chunks else {}
         budget = int(settings["max_context_chars"])
-        bounded = []
-        for item in evidence:
-            if len(item.text) <= budget:
-                bounded.append(item)
-                budget -= len(item.text)
-        evidence = bounded
+        evidence = []
+        for chunk, _ in fused:
+            score = dense_scores[chunk.chunk_id]
+            if score < float(settings["min_score"]) or len(chunk.text) > budget:
+                continue
+            evidence.append(to_evidence(chunk, score))
+            budget -= len(chunk.text)
+            if len(evidence) == top_k:
+                break
 
         guardrail = validate_retrieval(
             evidence,

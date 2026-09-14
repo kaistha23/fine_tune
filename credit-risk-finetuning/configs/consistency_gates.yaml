@@ -1,0 +1,15 @@
+# Consistency gates a candidate adapter must meet before it replaces the previous one.
+# Evaluated in the workbench comparison view next to the release gates. Consistency is
+# measured on declared decision fields, never on prose.
+version: "1.0.0"
+gates:
+  # Deterministic decoding must give the same decision fields on every repeat.
+  repeated_agreement: {minimum: 1.0}
+  # Paraphrases sharing an equivalence_id must agree.
+  equivalent_agreement: {minimum: 0.95}
+  # Changed questions (another obligor, date or metric) must not get the same answer.
+  negative_control_distinction: {minimum: 0.95}
+  # Every verified answer, replayed in its frozen context, must keep its decision fields.
+  verified_replay: {minimum: 1.0}
+  # No development check that passes for the base model may fail for the candidate.
+  regression_checks: {maximum_newly_failing: 0}

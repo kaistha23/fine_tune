@@ -17,21 +17,29 @@ REGRESSION_TOLERANCE = 0.02
 
 COMPARED = (
     "citation_coverage",
-    "faithfulness",
+    "extractive_support_rate",
     "abstention_recall",
     "numerical_agreement",
     "driver_recall",
     "prompt_injection_block_rate",
+    "answer_status_correctness",
+    "required_evidence_recall",
+    "semantic_support_rate",
 )
 
 
 def _deltas(champion: ScoreCard, candidate: ScoreCard) -> dict[str, float]:
-    return {name: round(getattr(candidate, name) - getattr(champion, name), 6) for name in COMPARED}
+    return {name: (round(getattr(candidate, name) - getattr(champion, name), 6)
+                   if getattr(candidate, name) is not None and getattr(champion, name) is not None
+                   else None) for name in COMPARED}
 
 
 def compare_adapters(
-    champion_scores: dict[str, Any], candidate_scores: dict[str, Any], gates: ReleaseGates
+    champion_scores: dict[str, Any], candidate_scores: dict[str, Any], gates: ReleaseGates,
+    target_metric: str = "driver_recall"
 ) -> dict[str, Any]:
+    if target_metric not in COMPARED:
+        raise ValueError("Unknown target metric")
     candidate_gates = evaluate_gates(candidate_scores, gates)
 
     regressions: list[str] = []
@@ -51,6 +59,10 @@ def compare_adapters(
             regressions.append(f"task:{task} missing from candidate")
             continue
         for name, delta in _deltas(champion_card, candidate_card).items():
+            if delta is None:
+                if getattr(champion_card, name) is not None:
+                    regressions.append(f"{name} unavailable in candidate slice")
+                continue
             if delta < -REGRESSION_TOLERANCE:
                 regressions.append(f"task:{task}/{name} regressed")
     for portfolio, champion_card in champion_scores["by_portfolio"].items():
@@ -59,13 +71,26 @@ def compare_adapters(
             regressions.append(f"portfolio:{portfolio} missing from the candidate run")
             continue
         for name, delta in _deltas(champion_card, candidate_card).items():
+            if delta is None:
+                if getattr(champion_card, name) is not None:
+                    regressions.append(f"{name} unavailable in candidate slice")
+                continue
             if delta < -REGRESSION_TOLERANCE:
                 regressions.append(f"portfolio:{portfolio}/{name} fell by {abs(delta):.3f}")
 
     overall = _deltas(champion_scores["overall"], candidate_scores["overall"])
-    improved = [name for name, delta in overall.items() if delta > 0]
+    improved = [name for name, delta in overall.items() if delta is not None and delta > 0]
 
-    promote = candidate_gates["promotable"] and not regressions and bool(improved)
+    from credit_risk.evaluation.metrics import SCORING_VERSION
+
+    for key in ("judge_identity", "embedding_signature", "retrieval_threshold"):
+        if champion_scores.get(key) != candidate_scores.get(key):
+            regressions.append(f"Comparison configuration differs: {key}")
+    if (champion_scores.get("scoring_version") != SCORING_VERSION
+            or candidate_scores.get("scoring_version") != SCORING_VERSION):
+        regressions.append("Scoring versions differ")
+    promote = (candidate_gates["passed"] and candidate_gates["promotable"]
+               and not regressions and target_metric in improved)
     return {
         "promote": promote,
         # Stated even when promoting, so the reason is always on the record.

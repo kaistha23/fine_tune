@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from credit_risk.architecture_policy import ArchitecturePolicy, ArchitecturePolicyError
 from credit_risk.auth import authenticate, current_reviewer, principal
 from credit_risk.factsheet import FactsheetError, build_factsheet
+from credit_risk.data_prep.rules import PolicyRuleRegistry, evaluate_rules
 from credit_risk.feedback import REMEDIATION_ROUTES
 from credit_risk.feedback_store import FeedbackStore
 from credit_risk.guardrails import validate_input, validate_output
@@ -41,6 +42,9 @@ from credit_risk.settings import settings
 app = FastAPI(title="Credit Risk Fine-Tuning Development API", version="0.1.0")
 policy = ArchitecturePolicy(settings.architecture_policy, settings.architecture_policy_version)
 registry = SchemaRegistry(settings.schema_registry, settings.schema_registry_version)
+policy_rules = PolicyRuleRegistry(
+    settings.policy_rules, settings.policy_rules_version, schema_registry=registry
+)
 feedback_store = FeedbackStore(settings.audit_store_path)
 interaction_store = InteractionStore(settings.audit_store_path)
 retrieval_policy = RetrievalPolicy(settings.retrieval_policy)
@@ -133,11 +137,24 @@ def data_call(operation, payload):
 
 @app.get("/health")
 def health() -> dict[str, str]:
+    readiness = "offline_test" if settings.offline_test_mode else "ready"
+    if not settings.offline_test_mode:
+        try:
+            retriever.index.embedder.embed_query("retrieval readiness probe")
+            if settings.qdrant_url:
+                for collection in retrieval_policy.data["namespaces"].values():
+                    if not retriever.index.client.collection_exists(collection):
+                        raise ValueError("Unindexed collection")
+                    retriever.index._check_signature(collection)
+        except Exception as exc:
+            raise HTTPException(503, "Retrieval backend is not ready") from exc
     return {
+        "retrieval_readiness": readiness,
         "status": "ok",
         "role": settings.service_role,
         "schema_registry_version": registry.version,
         "architecture_policy_version": policy.version,
+        "policy_rules_version": policy_rules.version,
         # An operator must be able to tell a real backend from the offline fallback
         # without reading the container environment: the fallback answers every question
         # with no evidence and is indistinguishable from a quiet corpus.
@@ -184,6 +201,7 @@ def _request_rows(request: QueryValidationRequest):
 
 
 class AnalysisFeedbackRequest(BaseModel):
+    semantic_review: dict = Field(default_factory=dict)
     model_config = ConfigDict(extra="forbid")
     """A reviewer's verdict on an answer the system actually served.
 
@@ -255,6 +273,10 @@ def analysis_feedback(request: AnalysisFeedbackRequest) -> dict:
             ),
         )
 
+    semantic_review = {}
+    if request.semantic_review:
+        semantic_review = {**request.semantic_review, "reviewer_id": current_reviewer()["id"],
+                           "status": request.review_status}
     if corrected_output:
         try:
             corrected = CreditResponse.model_validate_json(corrected_output)
@@ -265,11 +287,10 @@ def analysis_feedback(request: AnalysisFeedbackRequest) -> dict:
             ) from exc
 
         evidence = [Evidence.model_validate(item) for item in interaction.evidence]
-        check = validate_output(
-            corrected,
-            evidence,
-            factsheet_case_id=interaction.case_id,
-            factsheet=interaction.factsheet,
+        from credit_risk.guardrails import is_admissible_training_target
+
+        check = is_admissible_training_target(
+            corrected, evidence, interaction.factsheet, semantic_review
         )
         revalidation = {"performed": True, "passed": check.passed, "failures": check.failures}
         if not check.passed:
@@ -282,6 +303,7 @@ def analysis_feedback(request: AnalysisFeedbackRequest) -> dict:
             )
 
     record = FeedbackRecord(
+        semantic_review=semantic_review,
         interaction_id=request.interaction_id,
         reviewer_id=current_reviewer()["id"],
         review_status=request.review_status,
@@ -296,6 +318,7 @@ def analysis_feedback(request: AnalysisFeedbackRequest) -> dict:
         input_question=interaction.question,
         input_factsheet=interaction.factsheet,
         input_evidence=interaction.evidence,
+        rule_evaluations=interaction.rule_evaluations,
         original_output=interaction.original_output or "",
         error_labels=list(request.error_labels),
         corrected_output=corrected_output,
@@ -382,6 +405,7 @@ def _record_interaction(
     original_output: str | None,
     guardrail_failures: list[str],
     release: str,
+    rule_evaluations: list | None = None,
 ) -> str:
     """Persist what was served, and return the handle a correction will name.
 
@@ -409,6 +433,7 @@ def _record_interaction(
             question=request.user_text,
             factsheet=sheet.model_dump(mode="json"),
             evidence=[item.model_dump(mode="json") for item in evidence],
+            rule_evaluations=rule_evaluations or [],
             answer_status=AnswerStatus(answer_status),
             original_output=original_output,
             output_guardrail_failures=guardrail_failures,
@@ -461,11 +486,13 @@ def analyse(request: AnalysisRequest) -> dict:
                 None,
                 ["insufficient_evidence"],
                 "blocked",
+                [],
             ),
             "answer_status": "INSUFFICIENT_EVIDENCE",
             "factsheet": sheet.model_dump(mode="json"),
             "retrieval": {k: v for k, v in retrieval.items() if k != "evidence"},
             "evidence": [item.model_dump(mode="json") for item in evidence],
+            "rule_evaluations": [],
             "response": None,
             "action_control": {
                 "release": "blocked",
@@ -476,10 +503,46 @@ def analyse(request: AnalysisRequest) -> dict:
             },
         }
 
+    rule_results = evaluate_rules(policy_rules, sheet, evidence)
+    rendered_rules = [item.model_dump(mode="json") for item in rule_results]
+    unevaluable = [
+        item for item in rule_results if item.mandatory and item.status == "unevaluable"
+    ]
+    if unevaluable:
+        reasons = [
+            f"mandatory_rule_unevaluable:{item.rule_id}:{item.reason}"
+            for item in unevaluable
+        ]
+        return {
+            "interaction_id": _record_interaction(
+                request,
+                sheet,
+                evidence,
+                "INSUFFICIENT_EVIDENCE",
+                None,
+                reasons,
+                "blocked",
+                rendered_rules,
+            ),
+            "answer_status": "INSUFFICIENT_EVIDENCE",
+            "factsheet": sheet.model_dump(mode="json"),
+            "retrieval": {k: v for k, v in retrieval.items() if k != "evidence"},
+            "evidence": [item.model_dump(mode="json") for item in evidence],
+            "rule_evaluations": rendered_rules,
+            "response": None,
+            "action_control": {
+                "release": "blocked",
+                "risk_tier": "medium",
+                "human_approval_required": True,
+                "released": False,
+                "reasons": reasons,
+            },
+        }
+
     try:
         policy.require(settings.service_role, "call_model")
         response = model_client.generate_credit_response(
-            request.user_text, sheet.model_dump(mode="json"), evidence
+            request.user_text, sheet.model_dump(mode="json"), evidence, rendered_rules
         )
     except ArchitecturePolicyError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
@@ -493,9 +556,13 @@ def analyse(request: AnalysisRequest) -> dict:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
     output_check = validate_output(
-        response, evidence, factsheet_case_id=sheet.case_id, factsheet=sheet.model_dump(mode="json")
+        response,
+        evidence,
+        factsheet_case_id=sheet.case_id,
+        factsheet=sheet.model_dump(mode="json"),
+        rule_evaluations=rule_results,
     )
-    control = gate(response, request.query_plan.analysis_type)
+    control = gate(response, request.query_plan.analysis_type, policy_rules.action_control)
     if not output_check.passed:
         # An unsupported or miscited claim is never released, whatever the tier.
         control = {
@@ -517,12 +584,14 @@ def analyse(request: AnalysisRequest) -> dict:
             response.model_dump_json(),
             output_check.failures,
             control["release"],
+            rendered_rules,
         ),
         "answer_status": response.answer_status.value,
         "factsheet": sheet.model_dump(mode="json"),
         "retrieval": {k: v for k, v in retrieval.items() if k != "evidence"},
         "evidence": [item.model_dump(mode="json") for item in evidence],
         "response": response.model_dump(mode="json"),
+        "rule_evaluations": rendered_rules,
         "output_guardrail": {"passed": output_check.passed, "failures": output_check.failures},
         "action_control": control,
     }

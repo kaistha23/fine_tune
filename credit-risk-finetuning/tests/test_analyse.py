@@ -35,7 +35,7 @@ POLICY = ROOT / "configs" / "retrieval.yaml"
 def ensure_fixture() -> None:
     if not FIXTURE.is_file():
         subprocess.run(
-            [sys.executable, str(ROOT / "scripts" / "make_fixture.py")],
+            [sys.executable, "-m", "credit_risk.data_prep.fixture"],
             cwd=ROOT,
             check=True,
             capture_output=True,
@@ -50,7 +50,7 @@ def plan(**overrides) -> QueryPlan:
         "date_from": date(2025, 1, 31),
         "date_to": date(2025, 12, 31),
         "as_of_date": date(2026, 1, 15),
-        "metrics": ["current_ratio", "dscr", "pit_pd", "stage"],
+        "metrics": ["current_ratio", "dscr", "utilisation_pct", "pit_pd", "stage"],
     }
     base.update(overrides)
     return QueryPlan(**base)
@@ -65,7 +65,10 @@ def sama_chunk() -> PolicyChunk:
         section_id="7.2",
         approval_status="approved",
         confidentiality_level="internal",
-        text="A significant increase in credit risk requires stage 2 classification.",
+        text=(
+            "A significant increase in credit risk requires stage 2 classification. "
+            "Watchlist escalation applies at utilisation of 85% or more."
+        ),
     )
 
 
@@ -93,10 +96,15 @@ class StubModel:
         self.fail = fail
         self.seen: dict | None = None
 
-    def generate_credit_response(self, question, factsheet, evidence):
+    def generate_credit_response(self, question, factsheet, evidence, rule_evaluations=None):
         if self.fail:
             raise RuntimeError("connection refused to 127.0.0.1:9905")
-        self.seen = {"question": question, "factsheet": factsheet, "evidence": evidence}
+        self.seen = {
+            "question": question,
+            "factsheet": factsheet,
+            "evidence": evidence,
+            "rule_evaluations": rule_evaluations,
+        }
         return self.reply
 
 
@@ -137,7 +145,10 @@ class AnalyseRouteTests(unittest.TestCase):
 
     def post(self, **overrides):
         body = {
-            "user_text": "significant increase in credit risk",
+            "user_text": (
+                "A significant increase in credit risk requires stage 2 classification. "
+                "Watchlist escalation applies at utilisation of 85% or more."
+            ),
             "query_plan": plan().model_dump(mode="json"),
         }
         body.update(overrides)
@@ -159,6 +170,20 @@ class AnalyseRouteTests(unittest.TestCase):
         self.post()
         self.assertIn("calculated_metrics", stub.seen["factsheet"])
         self.assertNotIn("rows", stub.seen["factsheet"])
+        self.assertEqual(stub.seen["rule_evaluations"][0]["rule_id"], "sama.watchlist.utilisation.v1")
+
+    def test_mandatory_unevaluable_rule_abstains_before_calling_the_model(self) -> None:
+        stub = StubModel()
+        api.model_client = stub
+        body = self.post(
+            query_plan=plan(
+                metrics=["current_ratio", "dscr", "pit_pd", "stage"]
+            ).model_dump(mode="json")
+        ).json()
+        self.assertEqual(body["answer_status"], "INSUFFICIENT_EVIDENCE")
+        self.assertIsNone(body["response"])
+        self.assertIsNone(stub.seen)
+        self.assertIn("mandatory_rule_unevaluable", body["action_control"]["reasons"][0])
 
     def test_uncited_claim_is_blocked_even_though_the_model_answered(self) -> None:
         api.model_client = StubModel(

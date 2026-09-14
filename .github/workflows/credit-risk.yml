@@ -1,0 +1,18 @@
+name: Credit risk checks
+on: [push, pull_request]
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: credit-risk-finetuning
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.11.23'
+          python-version: '3.12'
+      - run: uv lock --check
+      - run: uv sync --frozen --extra dev --extra data --extra documents --extra rag
+      - run: uv run --frozen ruff check .
+      - run: uv run --frozen pytest -q

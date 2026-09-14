@@ -15,6 +15,7 @@ from credit_risk.schemas import CreditResponse, Evidence, QueryPlan
 
 MIN_REPORTABLE_SLICE = 10
 BOOTSTRAP_SAMPLES = 1000
+EVALUATOR_VERSION = "field-checks-v2"
 
 
 def check_schema(schema):
@@ -154,7 +155,13 @@ def assess(case, answer, version, query_checker=None):
         try:
             response = CreditResponse.model_validate(answer)
             evidence = [Evidence.model_validate(e) for e in case.evidence]
-            check = validate_output(response, evidence, case.facts.get("case_id"), case.facts)
+            check = validate_output(
+                response,
+                evidence,
+                case.facts.get("case_id"),
+                case.facts,
+                case.rule_evaluations,
+            )
             metrics["extractive_support_heuristic"] = float(check.passed)
             failures.extend(check.failures)
             refs = [eid for fact in response.facts for eid in fact.evidence_ids]
@@ -230,6 +237,27 @@ def assess(case, answer, version, query_checker=None):
         "sql_lineage": case.sql_lineage,
         "calibration": calibration_observations,
     }
+
+
+
+def assess_training_target(case, answer, version, semantic_review=None):
+    """Reuse field checks while keeping training admission separate from serving policy."""
+    metrics, failures, parsed = assess(case, answer, version)
+    if case.task == "credit_analysis" and parsed:
+        from credit_risk.guardrails import is_admissible_training_target
+
+        admission = is_admissible_training_target(
+            CreditResponse.model_validate(parsed["answer"]),
+            [Evidence.model_validate(e) for e in case.evidence], case.facts,
+            semantic_review or case.provenance.get("semantic_review"),
+            case.rule_evaluations,
+        )
+        metrics["training_target_admissible"] = float(admission.passed)
+        if admission.passed:
+            failures = [f for f in failures if f not in {"unsupported_claim", "unverified_narrative"}]
+        else:
+            failures.extend(admission.failures)
+    return metrics, failures, parsed
 
 
 def _bootstrap_interval(values, seed=42):
@@ -315,13 +343,13 @@ def calibration_summary(rows):
     }
 
 
-def evaluate(cases, provider, version, identity, query_checker=None):
+def evaluate(cases, provider, version, identity, query_checker=None, progress=None):
     """Provider is called three times per case. Mocking it tests plumbing, not model accuracy."""
     rows = []
     projections = {}
     equivalent = {}
     failed_fields = []
-    for case in cases:
+    for case_number, case in enumerate(cases, start=1):
         attempts = []
         keys = []
         for repeat in range(3):
@@ -377,6 +405,8 @@ def evaluate(cases, provider, version, identity, query_checker=None):
                 "calibration": first["calibration"],
             }
         )
+        if progress:
+            progress(case_number, len(cases))
     for family in equivalent.values():
         members = family["members"]
         if len(members) > 1:
@@ -399,9 +429,35 @@ def evaluate(cases, provider, version, identity, query_checker=None):
                 )
                 if row["metrics"]["negative_control_distinction"] == 0:
                     row["failures"].append("changed_question_false_match")
+    from credit_risk.evaluation.cli import release_report, serializable
+    from credit_risk.evaluation.gates import ReleaseGates
+    from credit_risk.evaluation.metrics import GoldCase
+    from credit_risk.settings import settings
+
+    release_cases = [GoldCase(
+        case_id=c.case_id, group_id=c.group_id, portfolio=c.portfolio,
+        jurisdiction=c.jurisdiction, task_type=c.task, question=c.question,
+        factsheet=c.facts, factsheet_case_id=c.facts.get("case_id"),
+        available_evidence=[Evidence.model_validate(e) for e in c.evidence],
+        must_abstain=c.expected.get("must_abstain", False),
+        is_injection_attempt=c.expected.get("is_injection_attempt", False),
+        required_risk_drivers=c.expected.get("risk_drivers", []),
+        required_evidence_ids=c.expected.get("evidence_ids", []),
+        expected_numerics={k: v["value"] if isinstance(v, dict) else v
+                           for k, v in c.expected.get("numerics", {}).items()},
+    ) for c in cases if c.task == "credit_analysis" and c.split in ("test", "oot")]
+    release_ids = {c.case_id for c in release_cases}
+    predictions = {r["case_id"]: {"output": r["attempts"][0]["output"],
+                                  "provider_failed": r["attempts"][0]["output"] is None}
+                   for r in rows if r["case_id"] in release_ids}
+    release = release_report(release_cases, predictions, ReleaseGates(settings.evaluation_thresholds),
+                             metadata={"generation": identity.get("generation"),
+                                       "candidate_identity": identity,
+                                       "prompt_hash": identity.get("prompt_hash", digest(version["prompt"]))})
     return {
         "identity": identity,
-        "evaluator_version": "field-checks-v2",
+        "release_evaluation": serializable(release),
+        "evaluator_version": EVALUATOR_VERSION,
         "case_set_hash": digest([c.model_dump() for c in cases]),
         "splits": {
             s: aggregate([r for r in rows if r["split"] == s])
@@ -443,17 +499,12 @@ def compare(left, right, mode="model"):
     else:
         raise ValueError("Unknown comparison mode")
     scorecards = {
-        s: {
-            m: {
-                "base": v["value"],
-                "candidate": right["splits"][s][m]["value"],
-                "delta": right["splits"][s][m]["value"] - v["value"],
-                "denominator": v["denominator"],
-            }
-            for m, v in metrics.items()
-            if m in right["splits"][s] and v["denominator"] == right["splits"][s][m]["denominator"]
-        }
+        s: _paired_scorecard(metrics, right["splits"].get(s, {}))
         for s, metrics in left["splits"].items()
+    }
+    portfolios = {
+        p: _paired_scorecard(metrics, right.get("portfolios", {}).get(p, {}))
+        for p, metrics in left.get("portfolios", {}).items()
     }
     left_rows = {row["case_id"]: row for row in left["cases"]}
     right_rows = {row["case_id"]: row for row in right["cases"]}
@@ -477,4 +528,34 @@ def compare(left, right, mode="model"):
             }
             for i, (metric, values) in enumerate(sorted(metric_deltas.items()))
         }
-    return {"scorecards": scorecards, "paired": paired}
+    return {"scorecards": scorecards, "portfolios": portfolios, "paired": paired}
+
+
+LOWER_IS_BETTER = {"confidence_brier_score"}
+
+
+def _paired_scorecard(left, right):
+    """Keep every metric either side measured; applicability can differ per model output.
+
+    A metric such as citation_resolution only exists for answers that cite, so base and
+    candidate denominators legitimately differ. Dropping those rows would report a measured
+    metric as Not evaluated. The per-case paired section remains the like-for-like view.
+    """
+    card = {}
+    for metric in sorted(set(left) | set(right)):
+        base, candidate = left.get(metric), right.get(metric)
+        row = {
+            "base": base["value"] if base else None,
+            "candidate": candidate["value"] if candidate else None,
+            "delta": candidate["value"] - base["value"] if base and candidate else None,
+            "denominator": min(
+                item["denominator"] for item in (base, candidate) if item is not None
+            ),
+        }
+        if not base or not candidate or base["denominator"] != candidate["denominator"]:
+            row["base_denominator"] = base["denominator"] if base else 0
+            row["candidate_denominator"] = candidate["denominator"] if candidate else 0
+        if metric in LOWER_IS_BETTER:
+            row["lower_is_better"] = True
+        card[metric] = row
+    return card

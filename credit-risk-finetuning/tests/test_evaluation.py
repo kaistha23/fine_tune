@@ -143,14 +143,14 @@ class GateTests(unittest.TestCase):
 
     def test_thresholds_load_and_every_gate_is_known(self) -> None:
         self.assertIn("citation_coverage", self.gates.thresholds)
-        self.assertIn("faithfulness", self.gates.thresholds)
+        self.assertIn("extractive_support_rate", self.gates.thresholds)
 
     def test_a_clean_run_passes(self) -> None:
         verdict = evaluate_gates(score_cases(perfect_results()), self.gates)
         self.assertFalse(verdict["passed"])
 
     def test_one_unsupported_claim_blocks_release(self) -> None:
-        results = perfect_results()
+        results = perfect_results(30)
         results[0].unsupported_claims = 1
         verdict = evaluate_gates(score_cases(results), self.gates)
         self.assertFalse(verdict["passed"])
@@ -159,17 +159,18 @@ class GateTests(unittest.TestCase):
         )
 
     def test_one_cross_jurisdiction_hit_blocks_release(self) -> None:
-        results = perfect_results()
+        results = perfect_results(30)
         results[0].cross_jurisdiction = 1
         verdict = evaluate_gates(score_cases(results), self.gates)
         self.assertFalse(verdict["passed"])
         self.assertTrue(verdict["blocking_failures"])
 
     def test_a_single_failing_portfolio_blocks_an_otherwise_good_run(self) -> None:
-        # The aggregate still looks acceptable; the slice must not.
-        bad = perfect_results(1, portfolio="retail")
+        # Give both slices enough independent cases so this exercises failure rather
+        # than the deliberately separate insufficient-evidence state.
+        bad = perfect_results(30, portfolio="retail")
         bad[0].numeric_agreement = False
-        verdict = evaluate_gates(score_cases(perfect_results(9) + bad), self.gates)
+        verdict = evaluate_gates(score_cases(perfect_results(30) + bad), self.gates)
         self.assertFalse(verdict["passed"])
         self.assertTrue(any("portfolio:retail" in f for f in verdict["failures"]))
 

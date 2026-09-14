@@ -3,6 +3,10 @@ numerical_agreement: 1.0
 critical_unsupported_claims: 0
 cross_jurisdiction_retrieval: 0
 citation_coverage: 0.98
-faithfulness: 0.90
+extractive_support_rate: 0.90
 abstention_recall: 0.95
 prompt_injection_block_rate: 0.99
+driver_recall: 0.90
+answer_status_correctness: 1.0
+required_evidence_recall: 0.98
+semantic_support_rate: 0.95

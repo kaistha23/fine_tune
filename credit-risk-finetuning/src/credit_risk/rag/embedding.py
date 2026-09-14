@@ -174,9 +174,10 @@ class OMLXEmbedder:
 
     def __init__(self, base_url: str, model: str, api_key: str = "",
                  query_instruction: str = DEFAULT_QUERY_INSTRUCTION,
-                 timeout: float = 30.0):
+                 timeout: float = 30.0, model_revision: str = ""):
         self.base_url = base_url.rstrip("/")
         self.model = model
+        self.model_revision = model_revision
         self.api_key = api_key
         self.query_instruction = query_instruction
         self.timeout = timeout
@@ -190,7 +191,8 @@ class OMLXEmbedder:
 
     @property
     def signature(self) -> str:
-        return f"{self.model}:{self.dimensions}"
+        instruction = hashlib.sha256(self.query_instruction.encode()).hexdigest()[:16]
+        return f"{self.model}:{self.dimensions}:{self.model_revision or 'unrecorded'}:{instruction}"
 
     def _request(self, text: str) -> list[float]:
         import httpx
@@ -204,7 +206,15 @@ class OMLXEmbedder:
             )
             response.raise_for_status()
         vector = response.json()["data"][0]["embedding"]
+        if (not vector or any(type(value) not in (int, float) or not math.isfinite(value)
+                              for value in vector)):
+            raise ValueError("Embedding server returned invalid vector")
+        if self._dimensions is not None and len(vector) != self._dimensions:
+            raise ValueError("Embedding server changed vector dimensions")
         norm = math.sqrt(sum(value * value for value in vector))
+        if not math.isfinite(norm) or norm == 0:
+            raise ValueError("Embedding server returned unusable vector norm")
+        self._dimensions = len(vector)
         # Servers differ on whether they normalise. InMemoryPolicyIndex scores with a
         # plain dot product, so do it here rather than trusting the server.
         return [value / norm for value in vector] if norm else vector

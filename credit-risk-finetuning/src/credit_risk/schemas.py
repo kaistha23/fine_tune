@@ -90,6 +90,7 @@ class QueryPlan(BaseModel):
 
 class MetricValue(BaseModel):
     value: float | int | str | bool | None
+    unit: str = Field(min_length=1, max_length=32)
     formula_id: str | None = None
     source_columns: list[str] = Field(default_factory=list)
     missing_data_flag: bool = False
@@ -125,9 +126,25 @@ class Evidence(BaseModel):
     effective_to: date | None = None
 
 
+class Derivation(BaseModel):
+    """A deterministic comparison between a governed metric and cited threshold."""
+
+    model_config = ConfigDict(extra="forbid")
+    metric: str = Field(min_length=1, max_length=100)
+    observed: float
+    operator: Literal["gt", "gte", "lt", "lte", "eq"]
+    threshold: float
+    unit: str = Field(min_length=1, max_length=32)
+    threshold_evidence_id: str = Field(min_length=1, max_length=256)
+    rule_id: str | None = Field(default=None, max_length=256)
+    holds: bool
+
+
 class SupportedClaim(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     statement: str
     evidence_ids: list[str] = Field(default_factory=list)
+    derivation: Derivation | None = None
 
 
 class InferenceClaim(BaseModel):
@@ -209,6 +226,7 @@ class InteractionRecord(BaseModel):
     question: str
     factsheet: dict[str, Any]
     evidence: list[dict[str, Any]] = Field(default_factory=list)
+    rule_evaluations: list[dict[str, Any]] = Field(default_factory=list)
     answer_status: AnswerStatus
     # The model's answer as served, serialised. None when the path abstained before the
     # model was reached, which is itself a correctable behaviour.
@@ -218,6 +236,7 @@ class InteractionRecord(BaseModel):
 
 
 class FeedbackRecord(BaseModel):
+    semantic_review: dict[str, Any] = Field(default_factory=dict)
     attempted_query_plan: dict[str, Any] | None = None
     reviewed_query_plan: dict[str, Any] | None = None
     sql_review_packet: dict[str, Any] | None = None
@@ -242,6 +261,7 @@ class FeedbackRecord(BaseModel):
     input_question: str = ""
     input_factsheet: dict[str, Any] | None = None
     input_evidence: list[dict[str, Any]] = Field(default_factory=list)
+    rule_evaluations: list[dict[str, Any]] = Field(default_factory=list)
     original_output: str
     error_labels: list[
         Literal[

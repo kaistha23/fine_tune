@@ -1,0 +1,21 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.6
+    hooks:
+      - id: ruff-check
+        args: [--config, credit-risk-finetuning/pyproject.toml]
+        files: ^credit-risk-finetuning/.*\.py$
+  - repo: local
+    hooks:
+      - id: credit-risk-lock
+        name: credit-risk lock
+        entry: uv lock --check --project credit-risk-finetuning
+        language: system
+        pass_filenames: false
+        files: ^credit-risk-finetuning/(pyproject.toml|uv.lock)$
+      - id: credit-risk-tests
+        name: credit-risk offline tests
+        entry: bash -c 'cd credit-risk-finetuning && uv run --frozen pytest -q'
+        language: system
+        pass_filenames: false
+        files: ^credit-risk-finetuning/

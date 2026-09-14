@@ -9,13 +9,16 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from credit_risk.guardrails import validate_output
+from credit_risk.data_prep.coverage import coverage_report
+from credit_risk.data_prep.diversity import validate_diversity
+from credit_risk.data_prep.taxonomy import Situation, normalize_task_type
+from credit_risk.guardrails import is_admissible_training_target
 from credit_risk.prompts import PROMPT_VERSION, build_messages
 from credit_risk.review_store import digest
 from credit_risk.schemas import CreditResponse, Evidence
 
 DEFAULT_QUESTION = "Assess the supplied credit factsheet using the supplied evidence."
-DATASET_VERSION = "v3.0.0"
+DATASET_VERSION = "v6.0.0"
 SPLITS = ("train", "valid", "test")
 
 
@@ -30,15 +33,29 @@ def build_sft_record(
     task_type: str,
     question: str = "",
     evidence: list[dict[str, Any]] | None = None,
+    semantic_review: dict | None = None,
+    situation: str = "base",
+    template_family: str | None = None,
+    rule_evaluations: list[dict[str, Any]] | None = None,
 ) -> dict:
+    if not case.get("group_id"):
+        raise ValueError("Explicit group_id required")
     evidence = evidence or []
     response = CreditResponse.model_validate_json(target)
-    check = validate_output(
-        response, [Evidence.model_validate(e) for e in evidence], case.get("case_id"), case
+    check = is_admissible_training_target(
+        response,
+        [Evidence.model_validate(e) for e in evidence],
+        case,
+        semantic_review,
+        rule_evaluations,
     )
     if not check.passed:
         raise ValueError("Target failed evidence validation: " + ",".join(check.failures))
-    group = str(case.get("group_id") or case["obligor_id"])
+    if not case.get("group_id"):
+        raise ValueError("Explicit group_id required")
+    group = str(case["group_id"])
+    task_type = normalize_task_type(task_type)
+    situation = Situation(situation).value
     return {
         "example_id": "SFT-"
         + digest(
@@ -47,6 +64,7 @@ def build_sft_record(
                 "task": task_type,
                 "question": question,
                 "evidence": evidence,
+                "rule_evaluations": rule_evaluations or [],
                 "target": target,
             }
         )[:24],
@@ -54,10 +72,17 @@ def build_sft_record(
         "obligor_id": str(case["obligor_id"]),
         "portfolio": case["portfolio"],
         "task_type": task_type,
+        "situation": situation,
+        "template_family": template_family,
+        "question": question or DEFAULT_QUESTION,
+        "target": json.loads(target),
+        "rule_evaluations": rule_evaluations or [],
         "jurisdiction": case["jurisdiction"],
         "as_of_date": case["as_of_date"],
         "messages": [
-            *build_messages(question or DEFAULT_QUESTION, case, evidence),
+            *build_messages(
+                question or DEFAULT_QUESTION, case, evidence, rule_evaluations=rule_evaluations
+            ),
             {"role": "assistant", "content": target},
         ],
         "split": stable_split(group),
@@ -98,6 +123,13 @@ def build_dataset(payloads, output: Path, cutoff: date, exclusions: dict | None 
         if not case.get("group_id"):
             raise ValueError("Explicit group_id required")
         group = case["group_id"]
+        family = payload.get("template_family") or case.get("provenance", {}).get(
+            "template_family"
+        )
+        if not family:
+            raise ValueError("Explicit template_family required")
+        if "situation" not in payload and "situation" not in case:
+            raise ValueError("Explicit situation required")
         obligor = case["obligor_id"]
         if obligor in ownership and ownership[obligor] != group:
             raise ValueError("Conflicting group lineage")
@@ -108,6 +140,10 @@ def build_dataset(payloads, output: Path, cutoff: date, exclusions: dict | None 
             payload["task_type"],
             payload.get("question", ""),
             payload.get("evidence", []),
+            payload.get("semantic_review"),
+            payload.get("situation", case.get("situation")),
+            family,
+            payload.get("rule_evaluations", []),
         )
         content = digest(record["messages"])
         if content in seen:
@@ -132,6 +168,7 @@ def build_dataset(payloads, output: Path, cutoff: date, exclusions: dict | None 
     ]
     if not records:
         raise ValueError("No eligible records")
+    diversity = validate_diversity(records)
     output.mkdir(parents=True)
     hashes = {}
     counts = {}
@@ -160,6 +197,10 @@ def build_dataset(payloads, output: Path, cutoff: date, exclusions: dict | None 
                 blocked_hashes | {r["content_hash"] for r in records if r["split"] == "test"}
             ),
         },
+        "template_family_counts": diversity["template_family_counts"],
+        "skeleton_counts": diversity["skeleton_counts"],
+        "situation_counts": diversity["situation_counts"],
+        "coverage_counts": coverage_report(records, {})["counts"],
     }
     manifest["manifest_hash"] = digest(manifest)
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")

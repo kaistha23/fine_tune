@@ -8,11 +8,16 @@ lands 5 days later and the risk models run 10 days later. That makes the leakage
 observable - a query as at 2025-12-31 sees 11 months, not 12, because December's data was
 not yet known.
 
-    uv run python scripts/make_fixture.py
+    uv run credit-risk-data-prep fixture
+    uv run credit-risk-data-prep fixture --month 2026-01 --out-dir data/incoming/2026-01
+
+The second form writes one synthetic month as Parquet files (one per table) for the
+workbench source loader, which validates and appends them as a new load.
 """
 from __future__ import annotations
 
 import argparse
+import calendar
 import random
 from datetime import date, timedelta
 from pathlib import Path
@@ -50,7 +55,8 @@ CREATE TABLE obligor_monthly (
     interest_expense DOUBLE, facility_limit DOUBLE, outstanding DOUBLE,
     days_past_due INTEGER, internal_rating VARCHAR,
     ttc_pd DOUBLE, pit_pd DOUBLE, lgd DOUBLE, ead DOUBLE, ecl DOUBLE,
-    stage INTEGER, watchlist_flag BOOLEAN, restructuring_flag BOOLEAN
+    stage INTEGER, watchlist_flag BOOLEAN, restructuring_flag BOOLEAN,
+    load_id INTEGER
 )
 """
 
@@ -60,7 +66,8 @@ CREATE TABLE facility_monthly (
     data_cutoff_date DATE, model_run_date DATE,
     portfolio VARCHAR, jurisdiction VARCHAR,
     facility_limit DOUBLE, outstanding DOUBLE, undrawn_amount DOUBLE,
-    days_past_due INTEGER, collateral_value DOUBLE, stage INTEGER
+    days_past_due INTEGER, collateral_value DOUBLE, stage INTEGER,
+    load_id INTEGER
 )
 """
 
@@ -69,8 +76,21 @@ def clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
 
-def build(seed: int, n_obligors: int):
-    rng = random.Random(seed)
+def month_end(value: str) -> date:
+    year, month = (int(part) for part in value.split("-"))
+    return date(year, month, calendar.monthrange(year, month)[1])
+
+
+def build(seed: int, n_obligors: int, months=None, first_index: int = 0, profiles=None,
+          profiles_out=None):
+    """Rows for the given month-ends; ``first_index`` continues the deterioration drift.
+
+    The initial fixture uses MONTH_ENDS from index 0. A later synthetic month passes its
+    own month-end, index 12, 13, ... and the obligor profiles (drift, limit, facilities)
+    captured from the initial build, so borrowers keep their facilities and trends.
+    """
+    months = months or MONTH_ENDS
+    rng = random.Random(seed + first_index)
     obligor_rows, facility_rows = [], []
 
     for i in range(1, n_obligors + 1):
@@ -79,11 +99,16 @@ def build(seed: int, n_obligors: int):
         jurisdiction = JURISDICTIONS[i % 2]
         # A fraction of obligors deteriorate across the year so the EWS and trend paths
         # have something to find.
-        drift = rng.choice([0.0, 0.0, 0.0, 0.04, 0.09])
-        limit = round(rng.uniform(500_000, 40_000_000), 2)
-        facility_ids = [f"FAC-{i:04d}-{k}" for k in range(1, rng.randint(1, 3) + 1)]
+        if profiles is None:
+            drift = rng.choice([0.0, 0.0, 0.0, 0.04, 0.09])
+            limit = round(rng.uniform(500_000, 40_000_000), 2)
+            facility_ids = [f"FAC-{i:04d}-{k}" for k in range(1, rng.randint(1, 3) + 1)]
+        else:
+            drift, limit, facility_ids = profiles[obligor_id]
+        if profiles_out is not None:
+            profiles_out[obligor_id] = (drift, limit, facility_ids)
 
-        for month, obs in enumerate(MONTH_ENDS):
+        for month, obs in enumerate(months, start=first_index):
             cutoff = obs + timedelta(days=DATA_LAG_DAYS)
             model_run = obs + timedelta(days=MODEL_LAG_DAYS)
             stress = drift * month
@@ -130,7 +155,7 @@ def build(seed: int, n_obligors: int):
                 limit, outstanding, dpd,
                 RATINGS[min(len(RATINGS) - 1, int(pit_pd * 40))],
                 round(ttc_pd, 6), round(pit_pd, 6), round(lgd, 6), ead, ecl,
-                stage, stage >= 2, bool(stress > 0.30),
+                stage, stage >= 2, bool(stress > 0.30), 1,
             ))
 
             share = 1.0 / len(facility_ids)
@@ -141,13 +166,47 @@ def build(seed: int, n_obligors: int):
                     obligor_id, facility_id, obs, cutoff, model_run,
                     portfolio, jurisdiction,
                     f_limit, f_out, round(max(0.0, f_limit - f_out), 2),
-                    dpd, round(f_out * rng.uniform(0.3, 1.4), 2), stage,
+                    dpd, round(f_out * rng.uniform(0.3, 1.4), 2), stage, 1,
                 ))
 
     return obligor_rows, facility_rows
 
 
-def main() -> None:
+def export_month(seed: int, n_obligors: int, month: str, out_dir: Path) -> dict[str, Path]:
+    """Write one synthetic month as Parquet files without load_id; the loader assigns it."""
+    end = month_end(month)
+    first = MONTH_ENDS[0]
+    index = (end.year - first.year) * 12 + (end.month - first.month)
+    if index < len(MONTH_ENDS):
+        raise ValueError("Synthetic appends must come after the initial 2025 fixture months")
+    profiles = {}
+    build(seed, n_obligors, profiles_out=profiles)
+    obligor_rows, facility_rows = build(seed, n_obligors, [end], index, profiles)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    written = {}
+    con = duckdb.connect()
+    try:
+        for table, ddl, rows, width in (
+            ("obligor_monthly", OBLIGOR_DDL, obligor_rows, 28),
+            ("facility_monthly", FACILITY_DDL, facility_rows, 14),
+        ):
+            con.execute(ddl)
+            con.executemany(f"INSERT INTO {table} VALUES (" + ",".join("?" * width) + ")", rows)
+            target = out_dir / f"{table}-{month}.parquet"
+            if target.exists():
+                raise ValueError(f"Output already exists: {target}")
+            columns = [
+                row[0] for row in con.execute(f"DESCRIBE {table}").fetchall() if row[0] != "load_id"
+            ]
+            projection = ", ".join(columns)
+            con.execute(f"COPY (SELECT {projection} FROM {table}) TO '{target}' (FORMAT parquet)")
+            written[table] = target
+    finally:
+        con.close()
+    return written
+
+
+def main(argv=None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path, default=Path("data/curated/credit_risk.duckdb"))
     # 300 obligors is not arbitrary: the cohort floor in the schema registry suppresses
@@ -156,7 +215,15 @@ def main() -> None:
     # cohort query correctly returns nothing, which makes the feature untestable.
     parser.add_argument("--obligors", type=int, default=300)
     parser.add_argument("--seed", type=int, default=17)
-    args = parser.parse_args()
+    parser.add_argument("--month", help="YYYY-MM: export one later synthetic month as Parquet")
+    parser.add_argument("--out-dir", type=Path, help="Directory for --month Parquet files")
+    args = parser.parse_args(argv)
+    if args.month:
+        if not args.out_dir:
+            parser.error("--month requires --out-dir")
+        for table, path in export_month(args.seed, args.obligors, args.month, args.out_dir).items():
+            print(f"{table}: {path}")
+        return
 
     obligor_rows, facility_rows = build(args.seed, args.obligors)
     args.out.parent.mkdir(parents=True, exist_ok=True)
@@ -167,9 +234,9 @@ def main() -> None:
     con.execute(OBLIGOR_DDL)
     con.execute(FACILITY_DDL)
     con.executemany(
-        "INSERT INTO obligor_monthly VALUES (" + ",".join("?" * 27) + ")", obligor_rows)
+        "INSERT INTO obligor_monthly VALUES (" + ",".join("?" * 28) + ")", obligor_rows)
     con.executemany(
-        "INSERT INTO facility_monthly VALUES (" + ",".join("?" * 13) + ")", facility_rows)
+        "INSERT INTO facility_monthly VALUES (" + ",".join("?" * 14) + ")", facility_rows)
 
     print(str(args.out))
     print(f"  obligor_monthly  {len(obligor_rows):>6} rows")

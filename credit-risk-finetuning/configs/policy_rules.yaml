@@ -1,0 +1,50 @@
+version: "1.0.0"
+default_deny: true
+
+rules:
+  - rule_id: sama.watchlist.utilisation.v1
+    metric: utilisation_pct
+    operator: gte
+    threshold: 85.0
+    unit: pct
+    action: flag_watchlist
+    mandatory: true
+    jurisdiction: SAMA
+    portfolios: [sme, corporate]
+    effective_from: 2025-01-01
+    evidence_id: SAMA-DOC-4@1.0#7.2
+    reviewer_id: policy-owner-example
+
+action_control:
+  reviewer_id: control-owner-example
+  evidence_id: INTERNAL-ACTION-CONTROL@1.0#1
+  analysis_tiers:
+    factsheet: low
+    credit_deterioration: medium
+    ews_analysis: medium
+    email_draft: medium
+    policy_qa: medium
+  prohibited_actions:
+    - approve the facility
+    - decline the application
+    - approved the loan
+    - we hereby approve
+    - final credit decision
+    - override the model
+    - waive the covenant
+    - amend the policy
+  high_tier_markers:
+    - rating recommendation
+    - recommend downgrade
+    - recommend upgrade
+    - sicr
+    - stage migration
+    - reclassify to stage
+    - limit increase
+    - covenant breach
+    - write-off
+  release:
+    low: auto_release
+    medium: analyst_review_required
+    high: senior_credit_approval_required
+    prohibited: blocked

@@ -45,7 +45,7 @@ class ReviewPacketTests(unittest.TestCase):
         ):
             self.assertIn(key, packet)
         self.assertEqual(packet["grain"], "obligor_month")
-        self.assertEqual(packet["governed_calculations"]["current_ratio"], "ratio.current_ratio.v1")
+        self.assertEqual(packet["governed_calculations"]["current_ratio"], "ratio.current_ratio.v2")
         self.assertIn("data_cutoff_date", packet["point_in_time_columns"])
 
     def test_values_stay_masked_and_sql_is_not_executable_by_the_reviewer(self) -> None:
