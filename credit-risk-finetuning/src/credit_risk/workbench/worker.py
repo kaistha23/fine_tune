@@ -6,12 +6,13 @@ import fcntl
 import hashlib
 import json
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 import yaml
 
 from credit_risk.review_store import digest
-from credit_risk.tokenization import CHAT_TEMPLATE_MODE, configure_non_thinking
+from credit_risk.tokenization import CHAT_TEMPLATE_MODE, configure_non_thinking, ensure_non_thinking
 from credit_risk.workbench.contracts import Case, inspect_dataset, messages
 from credit_risk.workbench.evaluation import assess_training_target, evaluate
 from credit_risk.workbench.store import Store
@@ -238,12 +239,222 @@ def query_checker(spec):
     return check
 
 
-def run(spec):
+def embedding_catalog():
+    base = (
+        Path.home()
+        / ".cache/huggingface/hub/models--mlx-community--Qwen3-Embedding-0.6B-8bit/snapshots"
+    )
+    return [
+        {"id": p.name, "path": str(p), "label": "Qwen3-Embedding-0.6B 8-bit / " + p.name[:12]}
+        for p in sorted(base.glob("*"))
+        if (p / "config.json").is_file()
+    ]
+
+
+def index_documents(spec):
+    from credit_risk.rag.embedding import MLXEmbedder
+    from credit_risk.workbench.documents import DocumentLibrary
+
+    output = Path(spec["output"])
+    library = DocumentLibrary(
+        Store(spec["workspace"]), Path(spec["documents_root"]), Path(spec["retrieval_policy"])
+    )
+
+    def progress(current, total):
+        temporary = output / "progress.json.tmp"
+        temporary.write_text(json.dumps({"current_cases": current, "total_cases": total}))
+        temporary.replace(output / "progress.json")
+
+    embedder = MLXEmbedder(spec["embedder"]["path"])
+    pending = library.pending(embedder.signature)
+    progress(0, len(pending))
+    done = library.index(embedder, progress)
+    (output / "result.json").write_text(
+        json.dumps({"indexed": done, "signature": embedder.signature})
+    )
+
+
+def run_session(spec, provider_factory=None, embedder_factory=None, clock=None, sleep=None):
+    """Keep one model (and adapter) loaded and serve Ask items until released or idle.
+
+    The session yields the single model lane: it stops when a release file appears, when it
+    has been idle for ``idle_seconds``, or as soon as any other job is queued and it has no
+    item of its own waiting. Items left queued are picked up by a fresh session.
+    """
+    import time
+
+    from credit_risk.data_prep.rules import PolicyRuleRegistry, evaluate_rules
+    from credit_risk.query_guard import SchemaRegistry
+    from credit_risk.workbench import ask
+    from credit_risk.workbench.documents import DocumentLibrary
+
+    clock = clock or time.monotonic
+    sleep = sleep or time.sleep
+    output = Path(spec["output"])
+    store = Store(spec["workspace"])
+    job_id = output.name
+    loaded = {}
+
+    def generate(chat, seed):
+        if "generate" not in loaded:
+            loaded["generate"] = (provider_factory or native_provider)(spec)
+        return loaded["generate"](chat, seed)
+
+    def embedder():
+        if "embedder" not in loaded:
+            if not spec.get("embedder"):
+                raise ValueError("No cached embedding model; documents cannot be retrieved")
+            if embedder_factory:
+                loaded["embedder"] = embedder_factory(spec)
+            else:
+                from credit_risk.rag.embedding import MLXEmbedder
+
+                loaded["embedder"] = MLXEmbedder(spec["embedder"]["path"])
+        return loaded["embedder"]
+
+    library = DocumentLibrary(store, Path(spec["documents_root"]), Path(spec["retrieval_policy"]))
+    registry = SchemaRegistry(spec["schema_registry"])
+    rules = PolicyRuleRegistry(spec["policy_rules"], schema_registry=registry)
+
+    def retrieve(question, context):
+        if not library.store.list("document"):
+            raise ValueError("no documents registered")
+        retriever, _versions = library.retriever(embedder())
+        return retriever.retrieve(question, context)
+
+    def evaluate(sheet, evidence):
+        return [item.model_dump(mode="json") for item in evaluate_rules(rules, sheet, evidence)]
+
+    def progress(processed, waiting):
+        temporary = output / "progress.json.tmp"
+        temporary.write_text(
+            json.dumps({"current_cases": processed, "total_cases": processed + waiting})
+        )
+        temporary.replace(output / "progress.json")
+
+    processed = 0
+    idle_since = clock()
+    progress(0, 0)
+    while True:
+        if (output / "release").exists():
+            break
+        waiting = [
+            item
+            for item in store.list("session_item")
+            if item["session_key"] == spec["session_key"] and item["status"] == "queued"
+        ]
+        if waiting:
+            item = store.update(
+                "session_item", waiting[0]["id"], status="running", session_job_id=job_id,
+                started_at=ask.now(),
+            )
+            item["session_job_id"] = job_id
+            try:
+                if item["kind"] == "plan_draft":
+                    question = store.get("question", item["question_id"])
+                    version = store.get("version", item["plan_version_id"])
+                    text = generate(messages(ask.plan_case(question, registry), version), 42)
+                    try:
+                        draft = ask.canonical_plan(ask.validate_plan(question, text))
+                        store.update("question", question["id"], status="plan_ready", plan_draft=draft, plan_draft_raw=None, plan_error=None)
+                    except ask.AskError as exc:
+                        # Keep a parseable but invalid draft editable: fixing one field beats retyping.
+                        try:
+                            candidate = ask.parse_json_object(text)
+                        except (ValueError, TypeError):
+                            candidate = None
+                        store.update("question", question["id"], status="plan_ready", plan_draft=None, plan_draft_candidate=candidate, plan_draft_raw=str(text)[:4000], plan_error=str(exc))
+                else:
+                    embed = (lambda text: embedder().embed(text)) if spec.get("embedder") else None
+                    ask.complete_answer(store, item, generate, retrieve, evaluate, embed)
+                store.update("session_item", item["id"], status="completed", finished_at=ask.now())
+            except Exception as exc:  # noqa: BLE001 — record per-item failure, keep serving.
+                detail = type(exc).__name__ + ": " + str(exc).splitlines()[0] if str(exc) else type(exc).__name__
+                store.update("session_item", item["id"], status="failed", error=detail, finished_at=ask.now())
+                store.update("question", item["question_id"], status="failed", error=detail)
+            processed += 1
+            idle_since = clock()
+            progress(processed, len(waiting) - 1)
+            continue
+        if any(job["status"] == "queued" for job in store.list("job")):
+            break
+        if clock() - idle_since > spec.get("idle_seconds", 600):
+            break
+        sleep(1)
+
+
+def run_replay(spec, provider_factory=None):
+    from credit_risk.workbench.learning import replay
+
+    output = Path(spec["output"])
+    generate = (provider_factory or native_provider)(spec)
+
+    def progress(current, total):
+        temporary = output / "progress.json.tmp"
+        temporary.write_text(json.dumps({"current_cases": current, "total_cases": total}))
+        temporary.replace(output / "progress.json")
+
+    progress(0, len(spec["answers"]))
+    result = replay(Store(spec["workspace"]), spec["answers"], generate, progress)
+    result["identity"] = {
+        "model": spec["model"],
+        "adapter_job_id": spec.get("adapter_job_id"),
+        "checkpoint_sha256": spec.get("checkpoint_sha256"),
+        "generation": spec["generation"],
+    }
+    (output / "result.json").write_text(json.dumps(result, indent=2))
+
+
+def native_provider(spec):
     import mlx.core as mx
     from mlx_lm import generate, load
     from mlx_lm.sample_utils import make_sampler
 
+    if spec.get("adapter_path"):
+        selected = Path(spec["adapter_path"]) / "adapters.safetensors"
+        if hashlib.sha256(selected.read_bytes()).hexdigest() != spec["checkpoint_sha256"]:
+            raise ValueError("Selected adapter changed after queuing")
+    model, tok = load(
+        spec["model"]["path"],
+        adapter_path=spec.get("adapter_path"),
+        tokenizer_config={"trust_remote_code": False},
+    )
+    ensure_non_thinking(configure_non_thinking(tok))
+    generation = spec["generation"]
+
+    def provide(chat, seed):
+        mx.random.seed(seed)
+        prompt = tok.apply_chat_template(chat, tokenize=False, add_generation_prompt=True)
+        if len(tok.encode(prompt)) + generation["max_tokens"] > spec["context_limit"]:
+            raise ValueError("Question context exceeds the generation budget")
+        return generate(
+            model,
+            tok,
+            prompt=prompt,
+            max_tokens=generation["max_tokens"],
+            sampler=make_sampler(
+                temp=generation["temperature"], top_p=generation["top_p"], top_k=generation["top_k"]
+            ),
+        )
+
+    return provide
+
+
+def run(spec):
     output = Path(spec["output"])
+    if spec["kind"] == "index_documents":
+        index_documents(spec)
+        return
+    if spec["kind"] == "session":
+        run_session(spec)
+        return
+    if spec["kind"] == "replay":
+        run_replay(spec)
+        return
+    import mlx.core as mx
+    from mlx_lm import generate, load
+    from mlx_lm.sample_utils import make_sampler
+
     if spec["kind"] == "train":
         cfg, metadata = prepare_training(spec, write=True)
         from credit_risk.training import execute_training
@@ -265,7 +476,7 @@ def run(spec):
         adapter_path=spec.get("adapter_path"),
         tokenizer_config={"trust_remote_code": False},
     )
-    configure_non_thinking(tok)
+    ensure_non_thinking(configure_non_thinking(tok))
 
     attempt_by_case = {}
 
@@ -302,10 +513,24 @@ def run(spec):
         "generation": spec["generation"],
     }
 
+    # Measured after model loading, so per-case time excludes the one-off load.
+    evaluation_started_at = datetime.now(UTC).isoformat()
+
     def record_progress(current, total):
         temporary = output / "progress.json.tmp"
-        temporary.write_text(json.dumps({"current_cases": current, "total_cases": total}))
+        temporary.write_text(
+            json.dumps(
+                {
+                    "current_cases": current,
+                    "total_cases": total,
+                    "started_at": evaluation_started_at,
+                    "updated_at": datetime.now(UTC).isoformat(),
+                }
+            )
+        )
         temporary.replace(output / "progress.json")
+
+    record_progress(0, len(cases))
 
     result = evaluate(
         cases,
@@ -328,6 +553,11 @@ def run(spec):
                 "schema_hash": digest(spec["version"]["schema"]),
                 "prompt_hash": digest(spec["version"]["prompt"]),
                 "identity": identity,
+                "job_id": output.name,
+                "job_kind": spec["kind"],
+                "comparison_id": spec.get("comparison_id"),
+                "comparison_role": spec.get("comparison_role"),
+                "adapter_job_id": spec.get("adapter_job_id"),
                 "metrics": row["metrics"],
                 "failures": row["failures"],
             },

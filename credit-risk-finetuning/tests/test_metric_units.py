@@ -35,5 +35,5 @@ def test_metric_value_rejects_a_missing_unit():
 
 def test_registry_units_match_the_factsheet_unit_contract():
     registry = yaml.safe_load((ROOT / "configs/schema_registry.yaml").read_text())
-    assert registry["version"] == "1.4.0"
+    assert registry["version"] == "1.5.0"
     assert {name: spec["unit"] for name, spec in registry["metrics"].items()} == METRIC_UNITS

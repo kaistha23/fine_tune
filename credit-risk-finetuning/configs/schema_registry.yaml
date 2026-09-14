@@ -1,4 +1,4 @@
-version: "1.4.0"
+version: "1.5.0"
 default_deny: true
 
 # Columns that carry point-in-time semantics. Every compiled query is filtered on
@@ -7,10 +7,15 @@ default_deny: true
 point_in_time:
   data_cutoff_column: data_cutoff_date
   model_run_column: model_run_date
+  # Append-only source loads (workbench). A snapshot query adds load_id <= watermark and
+  # keeps the latest load per grain row, so a restatement never rewrites an earlier
+  # snapshot. Queries without a snapshot do not reference this column.
+  load_column: load_id
 
 tables:
   obligor_monthly:
     grain: obligor_month
+    grain_columns: [obligor_id, observation_date]
     portfolios: [retail, sme, corporate]
     date_column: observation_date
     entity_column: obligor_id
@@ -42,8 +47,10 @@ tables:
       stage: {type: integer, allowed: [1, 2, 3], sensitivity: confidential}
       watchlist_flag: {type: boolean, sensitivity: confidential}
       restructuring_flag: {type: boolean, sensitivity: confidential}
+      load_id: {type: integer, min: 1, sensitivity: internal}
   facility_monthly:
     grain: facility_month
+    grain_columns: [obligor_id, facility_id, observation_date]
     portfolios: [retail, sme, corporate]
     date_column: observation_date
     entity_column: obligor_id
@@ -61,6 +68,7 @@ tables:
       days_past_due: {type: integer, min: 0, sensitivity: confidential}
       collateral_value: {type: number, min: 0, sensitivity: confidential}
       stage: {type: integer, allowed: [1, 2, 3], sensitivity: confidential}
+      load_id: {type: integer, min: 1, sensitivity: internal}
 
 # entity_grain is default-deny: a metric may only be requested at a grain it declares.
 metrics:

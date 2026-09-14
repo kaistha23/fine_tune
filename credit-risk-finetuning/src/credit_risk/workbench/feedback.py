@@ -184,6 +184,7 @@ def batch_records(store, task):
     latest = {r["interaction_id"]: r for r in store.list("feedback")}
     cases = []
     skipped = []
+    skipped_reasons = {}
     duplicate_or_capped = []
     seen_examples = set()
     family_counts = {}
@@ -192,6 +193,8 @@ def batch_records(store, task):
             continue
         if not r["eligible_for_training"]:
             skipped.append(r["id"])
+            reason = r.get("eligibility_status") or r.get("regression_status") or "not_eligible"
+            skipped_reasons[reason] = skipped_reasons.get(reason, 0) + 1
             continue
         case = Case.model_validate(r["snapshot"]["case"])
         # Re-check against every registered protected group at export time.
@@ -203,6 +206,9 @@ def batch_records(store, task):
         }
         if case.group_id in protected:
             skipped.append(r["id"])
+            skipped_reasons["protected_split_or_group"] = (
+                skipped_reasons.get("protected_split_or_group", 0) + 1
+            )
             continue
         fingerprint = digest(
             {"context": case.context_hash(), "question": case.question, "target": r["correction"]}
@@ -230,6 +236,7 @@ def batch_records(store, task):
         "task": task,
         "cases": cases,
         "skipped": skipped,
+        "skipped_reasons": skipped_reasons,
         "duplicate_or_capped": duplicate_or_capped,
         "template_family_counts": family_counts,
         "hash": digest(cases),

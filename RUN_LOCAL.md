@@ -1,3 +1,9 @@
+
+cd credit-risk-finetuning
+uv run --no-sync python -m credit_risk.workbench.server
+
+
+
 # Run the credit-risk fine-tuning repository locally
 
 This guide operates the governed **credit-risk advisory copilot** in
@@ -26,7 +32,9 @@ uv run --no-sync python -m credit_risk.workbench.server
 
 Open <http://127.0.0.1:8090>. The workbench automatically reopens its local registry and run
 history from `outputs/workbench/workbench.sqlite3`. It does not start training, resume an
-interrupted job, or register a changed manifest automatically.
+interrupted job, or register a changed manifest automatically. Jobs that were still queued when the
+workbench stopped are marked `interrupted` and must be started again. If either half of a paired
+base/candidate comparison fails or is stopped, the other queued half is cancelled.
 
 Use the **Datasets** view to confirm the intended immutable dataset version is registered. A
 registered manifest is rechecked before preflight and again before a worker starts. Never edit a
@@ -57,13 +65,61 @@ training dataset. If the refreshed source is used to construct training cases, c
 phase-2 manifest with a new `dataset_version`, source snapshot hash, split checksums, and truthful
 provenance.
 
+**3a. Grow workbench source data over time.** The workbench keeps its own append-only copy of
+the governed tables in `outputs/workbench/source/credit_risk.duckdb`; the Docker file above is never
+modified. In **Datasets → Source data**, choose **Initialize from curated fixture** once (load 1).
+For each new period, upload Parquet (preferred), CSV or JSONL records with the schema-registry
+columns — one row per obligor-month or facility-month, without `load_id` — choose **Validate**,
+fix any reported errors, then **Append as new load**. The same steps on the command line:
+
+```sh
+cd credit-risk-finetuning
+uv run credit-risk-data-prep source-init
+uv run credit-risk-data-prep fixture --month 2026-01 --out-dir data/incoming/2026-01
+uv run credit-risk-data-prep load --table obligor_monthly --file data/incoming/2026-01/obligor_monthly-2026-01.parquet --dry-run
+uv run credit-risk-data-prep load --table obligor_monthly --file data/incoming/2026-01/obligor_monthly-2026-01.parquet
+```
+
+Rows are never edited. A correction for an earlier period is a new row with the same grain and a
+later `data_cutoff_date`; later snapshots use it, earlier snapshots and earlier as-of dates keep the
+original. The same file cannot be loaded twice.
+
+**3b. Add policy and regulation documents.** In **Datasets → Documents**, upload a PDF, DOCX,
+Markdown or text file with its document ID, version, jurisdiction and effective-from date, then
+**Register document**. Upload a revised policy as a new version (never replace a file); it takes
+over on its effective date, and questions as at earlier dates still retrieve the older version.
+Only `approved` documents are retrievable. Choose **Index documents** to embed new documents with
+the cached Qwen3-Embedding model; the job appears in **Runs** and uses the single model lane.
+
+**3c. Ask questions.** In **Ask**, type a question, choose the jurisdiction, portfolio, as-of date
+and data snapshot (latest load by default), then **Draft plan with model** or **Write plan myself**.
+Check the plan (obligor, dates, metrics) and choose **Run with this plan**. The first model step
+starts a model session in the single model lane; it stays loaded for later questions and releases
+after 10 idle minutes, on **Release GPU**, or when you start training or evaluation. Each answer
+shows a badge: **New**, **Reused** (identical question and context, returned instantly),
+**Unstable** (the three deterministic repeats disagreed; never reused), **Changed since the last
+answer** (with the fields that changed and why), or a policy-rule abstention. Use **Give feedback on
+this answer** to open it in Answers & feedback.
+
+**3d. Close the loop.** On an Ask answer, **Confirm correct** or submit a correction in Answers &
+feedback: identical questions then return that verified answer immediately. Use **Plan was wrong**
+when you had to edit the model's plan. In **Datasets → Build dataset version from feedback**, pick a
+registered V2 dataset and a new version name (optionally add reviewed paraphrases), build, then
+**Register built dataset** and train it from **Runs**. In **Evaluation**, compare the new adapter
+against the base or the previous adapter, and **Replay verified answers** so the consistency gates can
+confirm earlier verified answers still hold.
+
 **4. Collect and export workbench feedback.** In **Answers & feedback**, inspect a captured
-answer, submit a comment, and add a corrected JSON answer plus independent expected checks when
+answer (each is labelled base model, candidate, adapter, regression or imported, with its job),
+submit a comment, and add a corrected JSON answer plus independent expected checks when
 available. A correction is eligible for training only when it is schema-valid, classified as
 `model_behaviour`, supported by its facts/evidence and review record, and outside every protected
-validation/test/OOT group.
+validation/test/OOT group. Answers produced by the Evaluation page come from validation, test and
+OOT cases, so their corrections become development checks only. To capture training feedback, run
+an **Evaluate dataset** job on **Train only** from the Runs page.
 
-Choose **Download eligible feedback fragment**. The downloaded file is an input fragment, not a
+Select the fragment task and choose **Download eligible feedback fragment**. When nothing is
+eligible, the page lists skipped feedback by reason instead of downloading an empty file. The downloaded file is an input fragment, not a
 registrable manifest. Keep its recommended maximum mixture: begin with no more than 20% validated
 feedback and at least 80% curated anchor cases. Deduplicate it, retain explicit `group_id` values,
 and never move validation, test, or OOT cases into training.

@@ -9,13 +9,19 @@ import math
 import shutil
 import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 import yaml
 
 from credit_risk.dataset import verify_manifest
 from credit_risk.review_store import digest
-from credit_risk.tokenization import CHAT_TEMPLATE_MODE, configure_non_thinking, verify_training_tokens
+from credit_risk.tokenization import (
+    CHAT_TEMPLATE_MODE,
+    configure_non_thinking,
+    ensure_non_thinking,
+    verify_training_tokens,
+)
 
 DEFAULT_CONFIG = Path("configs/training.yaml")
 DEFAULT_MODEL_DIR = Path("models/candidates")
@@ -159,7 +165,7 @@ def _execute_training(cfg, metadata):
             args[key] = value
     args = types.SimpleNamespace(**args)
     model, tokenizer = load(args.model, tokenizer_config={"trust_remote_code": False})
-    configure_non_thinking(tokenizer)
+    ensure_non_thinking(configure_non_thinking(tokenizer))
     train, valid, _ = load_dataset(args, tokenizer)
 
     class Callback:
@@ -177,6 +183,7 @@ def _execute_training(cfg, metadata):
             info = {
                 **info,
                 "optimizer_updates": self.last_iteration // cfg["grad_accumulation_steps"],
+                "reported_at": datetime.now(UTC).isoformat(),
             }
             with (output / "metrics.jsonl").open("a") as f:
                 f.write(json.dumps({"train": info}) + "\n")
@@ -186,7 +193,12 @@ def _execute_training(cfg, metadata):
                 raise FloatingPointError("Non-finite validation loss")
             self.last_iteration = max(self.last_iteration, info["iteration"])
             with (output / "metrics.jsonl").open("a") as f:
-                f.write(json.dumps({"validation": info}) + "\n")
+                f.write(
+                    json.dumps(
+                        {"validation": {**info, "reported_at": datetime.now(UTC).isoformat()}}
+                    )
+                    + "\n"
+                )
             iteration = info["iteration"]
             loss = info["val_loss"]
             if iteration == 0:

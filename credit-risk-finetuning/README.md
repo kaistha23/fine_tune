@@ -7,7 +7,7 @@ uv sync --frozen --extra dev --extra training --extra rag --extra documents --ex
 uv run --no-sync python -m credit_risk.workbench.server
 ```
 
-Read the [phase-2 contract and operating guide](docs/workbench-data-contract.md) and [workbench validation report](docs/workbench-validation.md). Workbench training requires the V2 data contract. Feedback uses Submit, saves invalid corrections with diagnostics, and creates development checks only from independent expected results. Unknown causes remain untriaged. Prompt/schema recommendations leave active settings unchanged.
+Start with the [architecture, evaluation and continuous-learning guide](docs/architecture-and-learning-loop.md). Read the [phase-2 contract and operating guide](docs/workbench-data-contract.md) and [workbench validation report](docs/workbench-validation.md). Workbench training requires the V2 data contract. Feedback uses Submit, saves invalid corrections with diagnostics, and creates development checks only from independent expected results. Unknown causes remain untriaged. Prompt/schema recommendations leave active settings unchanged.
 
 The following instructions describe the separate, existing SQL application. Its reviewer credentials do not apply to the fine-tuning dashboard.
 

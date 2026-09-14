@@ -9,10 +9,12 @@ import secrets
 import shutil
 from contextlib import asynccontextmanager
 from copy import deepcopy
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
+import duckdb
 import yaml
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
@@ -21,11 +23,21 @@ from pydantic import BaseModel, ConfigDict, Field
 from credit_risk.schemas import compact_json_schema
 from credit_risk.workbench.contracts import Case, default_version, inspect_dataset
 from credit_risk.review_store import digest
-from credit_risk.workbench.evaluation import EVALUATOR_VERSION, check_schema, compare
+from credit_risk.workbench.evaluation import (
+    EVALUATOR_VERSION,
+    LOWER_IS_BETTER,
+    MIN_REPORTABLE_SLICE,
+    check_schema,
+    compare,
+)
 from credit_risk.workbench.feedback import batch_records, submit
 from credit_risk.workbench.jobs import Jobs
+from credit_risk.workbench import ask, memory
+from credit_risk.workbench.ask import ASK_GENERATION, DETERMINISTIC_GENERATION
+from credit_risk.workbench.documents import MAX_DOCUMENT_BYTES, DocumentLibrary, DocumentMetadata
+from credit_risk.workbench.sources import MAX_UPLOAD_BYTES, SourceDatabase
 from credit_risk.workbench.store import Store
-from credit_risk.workbench.worker import PROJECT, model_catalog, prepare_training
+from credit_risk.workbench.worker import PROJECT, embedding_catalog, model_catalog, prepare_training
 
 
 class Strict(BaseModel):
@@ -98,8 +110,77 @@ class JobRequest(Strict):
     config: Config = Field(default_factory=Config)
 
 
+class SourceInitialization(Strict):
+    source_path: str | None = None
+
+
+class SourceAppend(Strict):
+    staged_id: str = Field(min_length=1, max_length=128)
+    table: str = Field(min_length=1, max_length=128)
+    file_name: str | None = Field(default=None, max_length=256)
+
+
+class DocumentRegistration(Strict):
+    staged_id: str = Field(min_length=1, max_length=128)
+    file_name: str = Field(min_length=1, max_length=256)
+    metadata: DocumentMetadata
+
+
+class ModelChoice(Strict):
+    model_id: str
+    adapter_job_id: str | None = None
+    checkpoint: Literal["best", "final"] = "best"
+
+
+class QuestionRequest(Strict):
+    question: str = Field(min_length=3, max_length=2000)
+    jurisdiction: Literal["SAMA", "CBUAE"]
+    portfolio: Literal["retail", "sme", "corporate"]
+    as_of_date: str
+    role: Literal["credit_analyst", "senior_credit_officer", "regulator_liaison"] = "credit_analyst"
+    snapshot_load_id: int | None = Field(default=None, ge=1)
+    plan_model: ModelChoice
+    plan_version_id: str
+    answer_model: ModelChoice
+    answer_version_id: str
+    draft_plan: bool = True
+
+
+class PlanConfirmation(Strict):
+    plan: dict
+
+
+class AskFeedback(Strict):
+    comment: str = Field(default="", max_length=8000)
+
+
+class DocumentIndexRequest(Strict):
+    embedder_id: str | None = None
+
+
+CONFIGS = Path(__file__).resolve().parents[3] / "configs"
+
+
+def embedder_signature(model):
+    """MLXEmbedder's signature without loading weights: model path and hidden size."""
+    config = json.loads((Path(model["path"]) / "config.json").read_text())
+    return f"{model['path']}:{int(config['hidden_size'])}"
+
+
+class ReplayRequest(Strict):
+    model: "ModelChoice"
+
+
+class DatasetBuildRequest(Strict):
+    base_dataset_id: str = Field(min_length=1, max_length=128)
+    dataset_version: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+    feedback_fraction: float = Field(default=0.2, gt=0, lt=1)
+    paraphrases: dict[str, list[str]] = Field(default_factory=dict)
+
+
 class ComparisonRunRequest(Strict):
     training_job_id: str = Field(min_length=1, max_length=128)
+    reference_job_id: str | None = Field(default=None, max_length=128)
     checkpoint: Literal["best", "final"] = "best"
     generation_profile: Literal["deterministic", "serving"] = "deterministic"
     splits: list[Literal["validation", "test", "oot"]] = Field(
@@ -111,22 +192,37 @@ def create_app(root=None, start_scheduler=True):
     store = Store(root or PROJECT / "outputs/workbench")
     jobs = Jobs(store)
     token = secrets.token_urlsafe(32)
+    recommended_ids = {}
     for task in ("credit_analysis", "query_plan"):
         recommended = default_version(task)
         if store.active_version(task) is None:
             item = store.add("version", recommended)
             store.active_version(task, item["id"])
-        elif not any(
-            version["task"] == task
-            and version["prompt"] == recommended["prompt"]
-            and version["schema"] == recommended["schema"]
-            for version in store.list("version")
-        ):
+        match = next(
+            (
+                version
+                for version in store.list("version")
+                if version["task"] == task
+                and version["prompt"] == recommended["prompt"]
+                and version["schema"] == recommended["schema"]
+            ),
+            None,
+        )
+        if match is None:
+            prefix = "Recommended structured contract v"
+            numbers = [
+                int(version["name"][len(prefix) :])
+                for version in store.list("version")
+                if version["task"] == task
+                and version["name"].startswith(prefix)
+                and version["name"][len(prefix) :].isdigit()
+            ]
             recommended.update(
-                name="Recommended structured contract v3",
+                name=prefix + str(max(numbers, default=2) + 1),
                 parent=store.active_version(task),
             )
-            store.add("version", recommended)
+            match = store.add("version", recommended)
+        recommended_ids[task] = match["id"]
 
     @asynccontextmanager
     async def lifespan(app):
@@ -168,6 +264,10 @@ def create_app(root=None, start_scheduler=True):
     async def invalid(request, exc):
         return JSONResponse({"detail": str(exc)}, status_code=422)
 
+    @app.exception_handler(duckdb.Error)
+    async def database_error(request, exc):
+        return JSONResponse({"detail": "Source database error: " + str(exc).splitlines()[0]}, status_code=422)
+
     @app.exception_handler(OSError)
     async def file_error(request, exc):
         return JSONResponse({"detail": "Local artifact unavailable: " + str(exc)}, status_code=422)
@@ -189,15 +289,169 @@ def create_app(root=None, start_scheduler=True):
     def session():
         return {"token": token, "mode": "Local development — no login"}
 
+    def moment(value):
+        try:
+            return datetime.fromisoformat(value) if value else None
+        except (TypeError, ValueError):
+            return None
+
+    def job_times(job):
+        """Recorded start/finish; jobs from before timing fall back to their log file times."""
+        started, finished = moment(job.get("started_at")), moment(job.get("finished_at"))
+        terminal = job["status"] not in ("queued", "running", "stopping")
+        output = job["spec"].get("output")
+        log = Path(output) / "job.log" if output else None
+        if log and log.is_file() and (started is None or (terminal and finished is None)):
+            stat = log.stat()
+            if started is None:
+                born = getattr(stat, "st_birthtime", stat.st_ctime)
+                started = datetime.fromtimestamp(born, UTC)
+            if terminal and finished is None:
+                finished = datetime.fromtimestamp(stat.st_mtime, UTC)
+        return started, finished
+
+    def timing(job, current, total, unit, anchor=None, last=None):
+        """Elapsed time and a rate-based remaining-time estimate.
+
+        The anchor is the first measured point after model loading (baseline validation
+        or evaluation start), so the one-off load does not inflate the per-unit rate.
+        """
+        started, finished = job_times(job)
+        clock = datetime.now(UTC)
+        end = finished or clock
+        result = {
+            "started_at": started.isoformat() if started else None,
+            "finished_at": finished.isoformat() if finished else None,
+            "elapsed_seconds": round((end - started).total_seconds()) if started else None,
+            "seconds_per_unit": None,
+            "eta_seconds": None,
+            "unit": unit,
+        }
+        anchor = anchor or started
+        last = last or end
+        if anchor and current and total and last > anchor:
+            per = (last - anchor).total_seconds() / current
+            result["seconds_per_unit"] = round(per, 1)
+            if job["status"] in ("running", "stopping") and current < total:
+                waited = (clock - last).total_seconds()
+                result["eta_seconds"] = round(max(0.0, per * (total - current) - waited))
+        return result
+
+    def without_cases(job):
+        """Job specs freeze full datasets; the dashboard list only needs their summaries."""
+        spec = job["spec"]
+        slim = {k: v for k, v in spec.items() if k != "cases"}
+        if spec.get("cases") is not None:
+            slim["case_count"] = len(spec["cases"])
+        if spec.get("dataset"):
+            slim["dataset"] = {k: v for k, v in spec["dataset"].items() if k != "cases"}
+        started, finished = job_times(job)
+        return {
+            **job,
+            "spec": slim,
+            "started_at": started.isoformat() if started else None,
+            "finished_at": finished.isoformat() if finished else None,
+        }
+
+    source_database = {}
+
+    def sources():
+        # Loaded on first use so a registry problem surfaces on the Source data panel
+        # instead of stopping the whole dashboard.
+        if "value" not in source_database:
+            from credit_risk.query_guard import SchemaRegistry
+            from credit_risk.settings import settings
+
+            source_database["value"] = SourceDatabase(
+                store.root / "source",
+                SchemaRegistry(CONFIGS / "schema_registry.yaml", settings.schema_registry_version),
+            )
+        return source_database["value"]
+
+    @app.get("/api/sources")
+    def source_summary():
+        return sources().summary()
+
+    @app.post("/api/sources/initialize")
+    def initialize_sources(request: SourceInitialization):
+        path = Path(request.source_path) if request.source_path else PROJECT / "data/curated/credit_risk.duckdb"
+        return sources().initialize(path.expanduser())
+
+    @app.post("/api/sources/stage")
+    async def stage_source(request: Request, table: str, filename: str):
+        declared = int(request.headers.get("content-length") or 0)
+        if declared > MAX_UPLOAD_BYTES:
+            raise ValueError("Uploaded file exceeds 200 MB")
+        staged = sources().stage(await request.body(), filename)
+        return {**sources().validate(staged["staged_id"], table), "file_name": staged["file_name"]}
+
+    @app.post("/api/sources/append")
+    def append_source(request: SourceAppend):
+        return sources().append(request.staged_id, request.table, request.file_name)
+
+    library = DocumentLibrary(store, store.root / "documents", CONFIGS / "retrieval.yaml")
+
+    def default_embedder(identity=None):
+        catalog = embedding_catalog()
+        model = next((m for m in catalog if identity in (None, m["id"])), None)
+        if model is None:
+            raise ValueError("Select a cached local Qwen3-Embedding snapshot")
+        return model
+
+    @app.get("/api/documents")
+    def documents():
+        catalog = embedding_catalog()
+        signature = embedder_signature(catalog[0]) if catalog else None
+        items = library.list()
+        for item in items:
+            item["indexed"] = signature in item["indexed_with"] if signature else False
+        return {"documents": items, "embedders": catalog, "signature": signature}
+
+    @app.post("/api/documents/stage")
+    async def stage_document(request: Request, filename: str):
+        if int(request.headers.get("content-length") or 0) > MAX_DOCUMENT_BYTES:
+            raise ValueError("Uploaded document exceeds 50 MB")
+        return library.stage(await request.body(), filename)
+
+    @app.post("/api/documents")
+    def register_document(request: DocumentRegistration):
+        return library.register(request.staged_id, request.file_name, request.metadata)
+
+    @app.post("/api/documents/index")
+    def index_documents(request: DocumentIndexRequest):
+        model = default_embedder(request.embedder_id)
+        pending = library.pending(embedder_signature(model))
+        if not pending:
+            raise ValueError("Every registered document is already indexed with this embedder")
+        active = {"queued", "running", "stopping"}
+        if any(j["spec"].get("kind") == "index_documents" and j["status"] in active for j in store.list("job")):
+            raise ValueError("A document indexing job is already queued or running")
+        return jobs.enqueue(
+            {
+                "kind": "index_documents",
+                "task": "documents",
+                "embedder": model,
+                "documents_root": str(library.root.resolve()),
+                "retrieval_policy": str(library.retrieval_policy),
+                "documents": [item["id"] for item in pending],
+            }
+        )
+
     @app.get("/api/state")
     def state():
         return {
             "datasets": [
                 {k: v for k, v in d.items() if k != "cases"} for d in store.list("dataset")
             ],
-            "jobs": store.list("job"),
+            "jobs": [without_cases(job) for job in store.list("job")],
             "versions": store.list("version"),
             "active": {t: store.active_version(t) for t in ("credit_analysis", "query_plan")},
+            "recommended": recommended_ids,
+            "preflights": store.list("preflight"),
+            "evaluation_policy": {
+                "min_reportable_slice": MIN_REPORTABLE_SLICE,
+                "lower_is_better": sorted(LOWER_IS_BETTER),
+            },
             "answers": store.list("answer"),
             "feedback": store.list("feedback"),
             "regressions": store.list("regression"),
@@ -267,7 +521,7 @@ def create_app(root=None, start_scheduler=True):
 
     @app.post("/api/feedback")
     def feedback(request: Feedback):
-        return submit(
+        record = submit(
             store,
             request.interaction_id,
             request.submission_id,
@@ -277,6 +531,13 @@ def create_app(root=None, start_scheduler=True):
             request.expectations,
             request.semantic_review,
         )
+        answer = store.get("answer", request.interaction_id)
+        if record["correction_valid"] and answer.get("keys") and answer["case"]["task"] == "credit_analysis":
+            # A valid correction to an Ask answer is returned for identical questions at once;
+            # training on it still waits for the normal eligibility and dataset steps.
+            verified = ask.verify(store, answer, output=record["correction"], reason="human correction")
+            record = {**record, "verified_answer_id": verified["id"]}
+        return record
 
     @app.get("/api/feedback/batch/{task}")
     def batch(task: str):
@@ -332,16 +593,7 @@ def create_app(root=None, start_scheduler=True):
 
     def generation_for(profile):
         return (
-            {
-                "profile": "deterministic",
-                "temperature": 0,
-                "top_p": 0,
-                "top_k": 0,
-                "seed_sequence": [42, 43, 44],
-                "max_tokens": 1024,
-                "repeats": 3,
-                "enable_thinking": False,
-            }
+            deepcopy(DETERMINISTIC_GENERATION)
             if profile == "deterministic"
             else {
                 "profile": "serving",
@@ -397,6 +649,11 @@ def create_app(root=None, start_scheduler=True):
         if version["task"] != request.task:
             raise ValueError("Version task mismatch")
         config = request.config.model_dump()
+        accumulation = config["grad_accumulation_steps"]
+        for key in ("steps_per_eval", "save_every", "steps_per_report"):
+            # Defaults follow the chosen accumulation; explicit values are still validated.
+            if key not in request.config.model_fields_set:
+                config[key] = -(-config[key] // accumulation) * accumulation
         if any(
             config[k] <= 0 or config[k] % config["grad_accumulation_steps"]
             for k in ("steps_per_eval", "save_every", "steps_per_report")
@@ -496,6 +753,7 @@ def create_app(root=None, start_scheduler=True):
         request_hash = digest(
             {
                 "training_job_id": training["id"],
+                "reference_job_id": request.reference_job_id,
                 "checkpoint": request.checkpoint,
                 "splits": request.splits,
                 "generation": generation,
@@ -526,6 +784,20 @@ def create_app(root=None, start_scheduler=True):
         }
         candidate = deepcopy(common)
         checkpoint_hash = attach_checkpoint(candidate, training, request.checkpoint)
+        if request.reference_job_id:
+            # Compare against the previous adapter instead of the base: same frozen cases,
+            # prompt/schema and generation; only the adapter differs.
+            reference = store.get("job", request.reference_job_id)
+            if (
+                reference["status"] != "completed"
+                or reference["spec"].get("kind") != "train"
+                or reference["spec"]["task"] != frozen["task"]
+                or reference["id"] == training["id"]
+            ):
+                raise ValueError("Reference must be another completed training run for this task")
+            if reference["spec"]["model"]["id"] != model["id"]:
+                raise ValueError("Reference adapter uses a different base snapshot")
+            attach_checkpoint(common, reference, "best")
         common["comparison_checkpoint_sha256"] = checkpoint_hash
         candidate["comparison_checkpoint_sha256"] = checkpoint_hash
         base = jobs.enqueue({**common, "comparison_role": "base"})
@@ -534,6 +806,7 @@ def create_app(root=None, start_scheduler=True):
             "comparison",
             {
                 "training_job_id": training["id"],
+                "reference_job_id": request.reference_job_id,
                 "base_job_id": base["id"],
                 "candidate_job_id": candidate_job["id"],
                 "checkpoint": request.checkpoint,
@@ -557,6 +830,19 @@ def create_app(root=None, start_scheduler=True):
         spec["output"] = str(store.root / "preflight-placeholder")
         if request.kind == "train":
             _, metadata = prepare_training(spec)
+            lengths = sorted(metadata["token_lengths"])
+            summary = {
+                "dataset_id": request.dataset_id,
+                "version_id": request.version_id,
+                "model_id": request.model_id,
+                "max_seq_length": spec["config"]["max_seq_length"],
+                "chat_template_hash": metadata["chat_template_hash"],
+                "examples": len(lengths),
+                "max_tokens": metadata["max_tokens"],
+                "p95_tokens": lengths[min(len(lengths) - 1, int(0.95 * len(lengths)))],
+                "min_assistant_tokens": metadata["min_assistant_tokens"],
+            }
+            store.add("preflight", summary, digest(summary))
             return {"passed": True, **metadata}
         cases = spec.get("cases") or spec["dataset"]["cases"]
         count = sum(c["split"] in spec["splits"] for c in cases)
@@ -598,6 +884,7 @@ def create_app(root=None, start_scheduler=True):
                 except json.JSONDecodeError:
                     pass
         total = current = None
+        anchor = last = None
         if job["spec"]["kind"] == "train":
             training_config = output / "training.yaml"
             if training_config.is_file():
@@ -606,6 +893,10 @@ def create_app(root=None, start_scheduler=True):
                 for kind in ("train", "validation"):
                     if kind in entry and "iteration" in entry[kind]:
                         current = max(current or 0, int(entry[kind]["iteration"]))
+                        reported = moment(entry[kind].get("reported_at"))
+                        if reported:
+                            anchor = anchor or reported
+                            last = reported
             current = current or 0
             if job["status"] == "completed" and total is not None:
                 current = total
@@ -615,6 +906,8 @@ def create_app(root=None, start_scheduler=True):
                 evaluation_progress = json.loads(progress_file.read_text())
                 current = int(evaluation_progress["current_cases"])
                 total = int(evaluation_progress["total_cases"])
+                anchor = moment(evaluation_progress.get("started_at"))
+                last = moment(evaluation_progress.get("updated_at"))
             else:
                 cases = job["spec"].get("cases") or job["spec"].get("dataset", {}).get(
                     "cases", []
@@ -635,11 +928,22 @@ def create_app(root=None, start_scheduler=True):
                 "total_cases": total,
                 "percent": round(100 * current / total, 1) if total else None,
             }
+        is_train = job["spec"]["kind"] == "train"
+        job_timing = timing(
+            job,
+            current,
+            total,
+            "micro-batch" if is_train else {"index_documents": "document", "replay": "answer"}.get(job["spec"]["kind"], "case"),
+            # Training metrics start with the iteration-0 baseline, so rate counts from there.
+            anchor,
+            last,
+        )
         return {
             "job": job,
             "result": result,
             "metrics": metrics,
             "progress": progress,
+            "timing": job_timing,
             "log": (output / "job.log").read_text(errors="replace")[-20000:]
             if (output / "job.log").exists()
             else "",
@@ -688,14 +992,331 @@ def create_app(root=None, start_scheduler=True):
             except (KeyError, TypeError, ValueError) as exc:
                 status = "incompatible"
                 compatibility_error = str(exc)
+        remaining, estimable = 0, True
+        per_case = base["timing"]["seconds_per_unit"] or candidate["timing"]["seconds_per_unit"]
+        for side in (base, candidate):
+            if side["job"]["status"] in ("running", "stopping"):
+                if side["timing"]["eta_seconds"] is None:
+                    estimable = False
+                else:
+                    remaining += side["timing"]["eta_seconds"]
+            elif side["job"]["status"] == "queued":
+                # A queued side has no rate yet; the other side's per-case time is the estimate.
+                if per_case and side["progress"]["total_cases"]:
+                    remaining += round(per_case * side["progress"]["total_cases"])
+                else:
+                    estimable = False
+        pair_timing = {
+            "elapsed_seconds": sum(
+                side["timing"]["elapsed_seconds"] or 0 for side in (base, candidate)
+            ),
+            "eta_seconds": remaining if estimable and status in ("queued", "running") else None,
+        }
+        for side in (base, candidate):
+            # Logs are fetched per job; polling the pair should not resend both.
+            side.pop("log", None)
+            side["job"] = without_cases(side["job"])
+        gates = None
+        if status == "completed":
+            from credit_risk.workbench.learning import consistency_gates, load_gates
+
+            gates = consistency_gates(
+                store,
+                load_gates(CONFIGS / "consistency_gates.yaml"),
+                candidate,
+                record["training_job_id"],
+                candidate["job"]["spec"].get("checkpoint_sha256"),
+            )
         return {
             "comparison": record,
             "status": status,
+            "consistency_gates": gates,
             "base": base,
             "candidate": candidate,
             "metrics": metrics,
             "compatibility_error": compatibility_error,
+            "timing": pair_timing,
         }
+
+    # -- Ask -----------------------------------------------------------------------------
+    def model_choice(choice: ModelChoice, task: str) -> dict:
+        model = next((m for m in model_catalog() if m["id"] == choice.model_id), None)
+        if not model:
+            raise ValueError("Select a cached local base snapshot")
+        selection = {"model": model, "adapter_path": None, "adapter_job_id": None, "checkpoint_sha256": None}
+        if choice.adapter_job_id:
+            job = store.get("job", choice.adapter_job_id)
+            if job["status"] != "completed" or job["spec"].get("kind") != "train" or job["spec"]["task"] != task:
+                raise ValueError(f"Select a completed {task} training run")
+            if job["spec"]["model"]["id"] != model["id"]:
+                raise ValueError("Adapter base snapshot mismatch")
+            attach_checkpoint(selection, job, choice.checkpoint)
+            selection["checkpoint"] = choice.checkpoint
+        return selection
+
+    def version_for(identity: str, task: str) -> dict:
+        version = store.get("version", identity)
+        if version["task"] != task:
+            raise ValueError(f"Select a {task} prompt/schema version")
+        compatible(version)
+        return version
+
+    def session_spec(selection: dict) -> dict:
+        catalog = embedding_catalog()
+        return {
+            "kind": "session",
+            "task": "ask",
+            "session_key": digest(
+                {"model": selection["model"]["id"], "checkpoint": selection.get("checkpoint_sha256")}
+            ),
+            "model": selection["model"],
+            "adapter_path": selection.get("adapter_path"),
+            "adapter_job_id": selection.get("adapter_job_id"),
+            "checkpoint_sha256": selection.get("checkpoint_sha256"),
+            "embedder": catalog[0] if catalog else None,
+            "generation": deepcopy(ASK_GENERATION),
+            "context_limit": 8192,
+            "idle_seconds": 600,
+            "documents_root": str(library.root.resolve()),
+            "retrieval_policy": str(library.retrieval_policy),
+            "schema_registry": str(CONFIGS / "schema_registry.yaml"),
+            "policy_rules": str(CONFIGS / "policy_rules.yaml"),
+        }
+
+    def queue_item(kind: str, question: dict, selection: dict, **payload) -> dict:
+        spec = session_spec(selection)
+        item = store.add(
+            "session_item",
+            {
+                "kind": kind,
+                "question_id": question["id"],
+                "session_key": spec["session_key"],
+                "status": "queued",
+                **payload,
+            },
+        )
+        active = {"queued", "running", "stopping"}
+        if not any(
+            job["status"] in active and job["spec"].get("session_key") == spec["session_key"]
+            for job in store.list("job")
+        ):
+            jobs.enqueue(spec)
+        return item
+
+    def question_view(question: dict) -> dict:
+        view = dict(question)
+        if question.get("answer_id"):
+            view["answer"] = store.get("answer", question["answer_id"])
+        view["items"] = [
+            {k: v for k, v in item.items() if k != "prepared"}
+            for item in store.list("session_item")
+            if item["question_id"] == question["id"]
+        ]
+        return view
+
+    @app.post("/api/questions")
+    def ask_question(request: QuestionRequest):
+        text = ask.check_question(request.question)
+        try:
+            as_of = datetime.fromisoformat(request.as_of_date).date()
+        except ValueError as exc:
+            raise ValueError("as_of_date must be YYYY-MM-DD") from exc
+        if as_of > datetime.now(UTC).date():
+            raise ValueError("as_of_date must not be in the future")
+        snapshot = sources().snapshot(request.snapshot_load_id)
+        plan_selection = model_choice(request.plan_model, "query_plan")
+        model_choice(request.answer_model, "credit_analysis")  # validated now, resolved on confirm
+        version_for(request.plan_version_id, "query_plan")
+        version_for(request.answer_version_id, "credit_analysis")
+        question = store.add(
+            "question",
+            {
+                "question": text,
+                "jurisdiction": request.jurisdiction,
+                "portfolio": request.portfolio,
+                "as_of_date": as_of.isoformat(),
+                "role": request.role,
+                "snapshot": snapshot,
+                "plan_model": request.plan_model.model_dump(),
+                "plan_version_id": request.plan_version_id,
+                "answer_model": request.answer_model.model_dump(),
+                "answer_version_id": request.answer_version_id,
+                "status": "drafting_plan" if request.draft_plan else "plan_ready",
+                "plan_draft": None,
+                "plan_error": None,
+            },
+        )
+        if request.draft_plan:
+            queue_item("plan_draft", question, plan_selection, plan_version_id=request.plan_version_id)
+        return question_view(question)
+
+    @app.get("/api/questions")
+    def list_questions():
+        return [
+            {k: question.get(k) for k in ("id", "question", "status", "badge", "as_of_date", "jurisdiction", "portfolio", "snapshot", "answer_id", "created_at", "error")}
+            for question in reversed(store.list("question")[-200:])
+        ]
+
+    @app.get("/api/questions/{identity}")
+    def get_question(identity: str):
+        return question_view(store.get("question", identity))
+
+    @app.post("/api/questions/{identity}/plan")
+    def confirm_plan(identity: str, request: PlanConfirmation):
+        from credit_risk.query_guard import SchemaRegistry
+        from credit_risk.rag.filters import RetrievalPolicy
+        from credit_risk.settings import settings
+
+        question = store.get("question", identity)
+        if question["status"] not in ("plan_ready", "failed"):
+            raise ValueError(f"Question is {question['status']}; a plan can be confirmed once it is ready")
+        plan = ask.validate_plan(question, request.plan)
+        answer_selection = model_choice(ModelChoice(**question["answer_model"]), "credit_analysis")
+        version = version_for(question["answer_version_id"], "credit_analysis")
+        catalog = embedding_catalog()
+        registry = SchemaRegistry(CONFIGS / "schema_registry.yaml", settings.schema_registry_version)
+        prepared = ask.prepare(
+            question,
+            plan,
+            source_db=sources(),
+            registry=registry,
+            library=library,
+            retrieval_policy=RetrievalPolicy(library.retrieval_policy),
+            rules_path=CONFIGS / "policy_rules.yaml",
+            answer_model=answer_selection,
+            answer_version=version,
+            embedder_signature=embedder_signature(catalog[0]) if catalog else None,
+            plan_draft=question.get("plan_draft"),
+        )
+        plan_answer = None
+        if not question.get("plan_answer_id"):
+            plan_answer = ask.record_plan_answer(store, question, prepared["plan"], registry)
+        question = store.update(
+            "question", identity, status="answering", plan_confirmed=prepared["plan"],
+            plan_edited=bool(plan_answer and plan_answer["plan_edited"]) or prepared["plan_edited"],
+            plan_answer_id=plan_answer["id"] if plan_answer else question.get("plan_answer_id"),
+            keys=prepared["keys"], error=None,
+        )
+        reused = memory.lookup(store, prepared["keys"]["answer_key"])
+        if reused:
+            question = ask.finish_with_memory(store, identity, reused, prepared)
+        else:
+            queue_item("answer", question, answer_selection, prepared=prepared)
+        return question_view(question)
+
+    @app.post("/api/questions/{identity}/plan-feedback")
+    def plan_feedback(identity: str, request: AskFeedback):
+        question = store.get("question", identity)
+        if not question.get("plan_answer_id") or not question.get("plan_confirmed"):
+            raise ValueError("Run a model-drafted plan first; there is no plan draft to give feedback on")
+        edited = question.get("plan_edited")
+        comment = request.comment.strip() or (
+            "The drafted plan needed changes before it could run." if edited else "Plan draft feedback."
+        )
+        return submit(
+            store,
+            question["plan_answer_id"],
+            "plan-" + uuid4().hex,
+            comment,
+            question["plan_confirmed"] if edited else None,
+            "model_behaviour" if edited else "unknown",
+        )
+
+    @app.post("/api/answers/{identity}/verify")
+    def verify_answer(identity: str, request: AskFeedback):
+        answer = store.get("answer", identity)
+        if answer.get("memory_status") in ("unstable", "invalid"):
+            raise ValueError("Unstable or invalid answers cannot be confirmed; submit a correction instead")
+        record = ask.verify(store, answer, reason="confirmed correct in Ask")
+        submit(store, identity, "verify-" + uuid4().hex, "Confirmed correct. " + request.comment.strip())
+        return {"verified_answer_id": record["id"], "note": "Identical questions in this context now return this answer."}
+
+    @app.post("/api/questions/{identity}/still-valid")
+    def still_valid(identity: str, request: AskFeedback):
+        question = store.get("question", identity)
+        comparison = question.get("comparison") or {}
+        if not comparison.get("previous_answer_id") or not question.get("answer_id"):
+            raise ValueError("Only an answer that changed since an earlier answer can be re-confirmed")
+        current = store.get("answer", question["answer_id"])
+        previous = store.get("answer", comparison["previous_answer_id"])
+        record = ask.verify(store, current, source_answer=previous, reason="earlier answer re-confirmed as still valid")
+        submit(store, current["id"], "still-valid-" + uuid4().hex, "Earlier answer still valid in the new context. " + request.comment.strip())
+        store.update("question", identity, badge="verified", answer_id=record["id"])
+        return question_view(store.get("question", identity))
+
+    @app.post("/api/replay")
+    def start_replay(request: ReplayRequest):
+        from credit_risk.workbench.learning import verified_answers
+
+        answers = [record["answer_id"] for record in verified_answers(store)]
+        if not answers:
+            raise ValueError("No verified answers yet; confirm or correct Ask answers first")
+        selection = model_choice(request.model, "credit_analysis")
+        return jobs.enqueue(
+            {
+                "kind": "replay",
+                "task": "credit_analysis",
+                "model": selection["model"],
+                "adapter_path": selection.get("adapter_path"),
+                "adapter_job_id": selection.get("adapter_job_id"),
+                "checkpoint_sha256": selection.get("checkpoint_sha256"),
+                "generation": deepcopy(ASK_GENERATION),
+                "context_limit": 8192,
+                "answers": answers,
+            }
+        )
+
+    @app.get("/api/verified")
+    def verified():
+        from credit_risk.workbench.learning import verified_answers
+
+        return [
+            {"answer_id": r["answer_id"], "question": r["question"], "reason": r["reason"], "fields": r["fields"], "created_at": r["created_at"]}
+            for r in verified_answers(store)
+        ]
+
+    @app.post("/api/datasets/build")
+    def build_dataset_version(request: DatasetBuildRequest):
+        from credit_risk.workbench.learning import build_dataset
+
+        return build_dataset(
+            store,
+            store.get("dataset", request.base_dataset_id),
+            request.dataset_version,
+            PROJECT / "data/workbench",
+            request.paraphrases,
+            request.feedback_fraction,
+        )
+
+    @app.get("/api/sessions")
+    def sessions():
+        active = {"queued", "running", "stopping"}
+        items = store.list("session_item")
+        return [
+            {
+                "job_id": job["id"],
+                "status": job["status"],
+                "model": job["spec"]["model"]["label"],
+                "adapter_job_id": job["spec"].get("adapter_job_id"),
+                "queued_items": sum(i["session_key"] == job["spec"]["session_key"] and i["status"] == "queued" for i in items),
+                "releasing": (Path(job["spec"]["output"]) / "release").exists(),
+                "started_at": job_times(job)[0].isoformat() if job_times(job)[0] else None,
+            }
+            for job in store.list("job")
+            if job["spec"].get("kind") == "session" and job["status"] in active
+        ]
+
+    @app.post("/api/sessions/release")
+    def release_sessions():
+        released = []
+        for job in store.list("job"):
+            if job["spec"].get("kind") == "session" and job["status"] in ("queued", "running"):
+                if job["status"] == "queued":
+                    jobs.stop(job["id"])
+                else:
+                    (Path(job["spec"]["output"]) / "release").write_text("released\n")
+                released.append(job["id"])
+        return {"released": released, "note": "Running sessions finish their current step, then free the model lane."}
 
     return app
 

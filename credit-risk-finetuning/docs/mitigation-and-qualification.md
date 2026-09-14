@@ -12,7 +12,7 @@ The implementation separates training admission, serving acceptance, and indepen
 
 ## Deployment and indexing
 
-Set `CR_EMBEDDING_MODEL` to the model actually served by native oMLX, plus `CR_OMLX_API_KEY` where required. Update existing environments to `CR_SCHEMA_REGISTRY_VERSION=1.4.0`. Unknown `CR_` keys are errors. The documented `CR_TEST_*` integration-test keys remain supported.
+Set `CR_EMBEDDING_MODEL` to the model actually served by native oMLX, plus `CR_OMLX_API_KEY` where required. Update existing environments to `CR_SCHEMA_REGISTRY_VERSION=1.5.0` (1.5.0 adds the workbench `load_id` snapshot column and table grain columns). Unknown `CR_` keys are errors. The documented `CR_TEST_*` integration-test keys remain supported.
 
 Hashing requires explicit `CR_OFFLINE_TEST_MODE=true`; never set that on a deployment or a qualification run. `/health` reports offline-test mode distinctly, and in normal operation returns 503 when embeddings or configured Qdrant collections/signatures are unavailable. Health checks are availability checks, not evidence-quality certification.
 

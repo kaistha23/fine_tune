@@ -499,17 +499,12 @@ def compare(left, right, mode="model"):
     else:
         raise ValueError("Unknown comparison mode")
     scorecards = {
-        s: {
-            m: {
-                "base": v["value"],
-                "candidate": right["splits"][s][m]["value"],
-                "delta": right["splits"][s][m]["value"] - v["value"],
-                "denominator": v["denominator"],
-            }
-            for m, v in metrics.items()
-            if m in right["splits"][s] and v["denominator"] == right["splits"][s][m]["denominator"]
-        }
+        s: _paired_scorecard(metrics, right["splits"].get(s, {}))
         for s, metrics in left["splits"].items()
+    }
+    portfolios = {
+        p: _paired_scorecard(metrics, right.get("portfolios", {}).get(p, {}))
+        for p, metrics in left.get("portfolios", {}).items()
     }
     left_rows = {row["case_id"]: row for row in left["cases"]}
     right_rows = {row["case_id"]: row for row in right["cases"]}
@@ -533,4 +528,34 @@ def compare(left, right, mode="model"):
             }
             for i, (metric, values) in enumerate(sorted(metric_deltas.items()))
         }
-    return {"scorecards": scorecards, "paired": paired}
+    return {"scorecards": scorecards, "portfolios": portfolios, "paired": paired}
+
+
+LOWER_IS_BETTER = {"confidence_brier_score"}
+
+
+def _paired_scorecard(left, right):
+    """Keep every metric either side measured; applicability can differ per model output.
+
+    A metric such as citation_resolution only exists for answers that cite, so base and
+    candidate denominators legitimately differ. Dropping those rows would report a measured
+    metric as Not evaluated. The per-case paired section remains the like-for-like view.
+    """
+    card = {}
+    for metric in sorted(set(left) | set(right)):
+        base, candidate = left.get(metric), right.get(metric)
+        row = {
+            "base": base["value"] if base else None,
+            "candidate": candidate["value"] if candidate else None,
+            "delta": candidate["value"] - base["value"] if base and candidate else None,
+            "denominator": min(
+                item["denominator"] for item in (base, candidate) if item is not None
+            ),
+        }
+        if not base or not candidate or base["denominator"] != candidate["denominator"]:
+            row["base_denominator"] = base["denominator"] if base else 0
+            row["candidate_denominator"] = candidate["denominator"] if candidate else 0
+        if metric in LOWER_IS_BETTER:
+            row["lower_is_better"] = True
+        card[metric] = row
+    return card
