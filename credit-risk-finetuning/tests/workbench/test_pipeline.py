@@ -950,6 +950,7 @@ def test_workbench_training_requires_v2_contract(tmp_path):
 
 
 def test_v2_preflight_resolves_schedule_modules_and_template_mode(tmp_path):
+    pytest.importorskip("mlx_lm")
     from credit_risk.workbench.worker import MLP_KEYS, prepare_training
 
     def v2_case(split, identity):
